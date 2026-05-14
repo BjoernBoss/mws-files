@@ -1,1 +1,0 @@
-<li><a href="{path}" style="margin: 0;">{name}</a></li>

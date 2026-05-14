@@ -1,1 +1,0 @@
-<li><p style="margin: 0;">Empty directory</p></li>
