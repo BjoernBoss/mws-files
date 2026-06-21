@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 Bjoern Boss Henrichsen */
 
 const REMOVE_NOTIFICATION_ANIMATION = 25;
 const FADE_NOTIFICATION_ANIMATION = 3500;
@@ -233,8 +235,9 @@ _state.removeFile = (name) => {
 	};
 }
 
+const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 _state.formatSize = (size) => {
-	for (const option of [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']]) {
+	for (const option of UNIT_PREFIX_LIST) {
 		if (size < option[0] && option[0] > 0)
 			continue;
 		if (option[1] == '')
@@ -334,7 +337,7 @@ _state.updateList = (content) => {
 	}
 
 	/* check if the list is empty and add the placeholder */
-	document.getElementById('empty-directory').style.display = (_state.list.length == 0 ? 'unset' : 'none');
+	document.getElementById('empty-directory').style.display = (_state.list.length == 0 ? 'block' : 'none');
 	console.log('content list has been updated...');
 }
 
@@ -342,8 +345,8 @@ window.onload = () => {
 	/* parse the manifest */
 	_state.manifest.canDelete = (LOAD_CONFIG.manifest?.canDelete ?? false);
 	_state.manifest.canUpload = (LOAD_CONFIG.manifest?.canUpload ?? false);
-	_state.manifest.maxUploadSize = (_state.manifest.canUpload ? (LOAD_CONFIG.manifest?.canUpload ?? 0) : 0);
-	if (_state.manifest.maxUploadSize <= 0)
+	_state.manifest.maxUploadSize = (_state.manifest.canUpload ? (LOAD_CONFIG.manifest?.maxUploadSize ?? null) : 0);
+	if (_state.manifest.maxUploadSize != null && _state.manifest.maxUploadSize <= 0)
 		_state.manifest.canUpload = false;
 	_state.manifest.basePath = (LOAD_CONFIG.manifest?.basePath ?? '');
 
@@ -359,9 +362,10 @@ window.onload = () => {
 		lastWidth = width;
 	}).observe(location);
 
-	/* setup the parent and home icons */
+	/* setup the initial icons to be loaded */
 	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', './back-icon.svg'));
 	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', './home-icon.svg'));
+	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', './create-icon.svg'));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.manifest.canUpload) {
@@ -405,8 +409,7 @@ window.onload = () => {
 		};
 
 		/* actually present the drop content and add the size constraints */
-		document.getElementById('drop-line').style.display = 'unset';
-		document.getElementById('drop-visual').style.display = 'unset';
+		document.getElementById('upload-visual').style.display = 'flex';
 		if (_state.manifest.maxUploadSize != null) {
 			const text = `(Max. ${_state.formatSize(_state.manifest.maxUploadSize)})`;
 			document.getElementById('drop-detail').innerHTML = text;

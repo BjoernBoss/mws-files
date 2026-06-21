@@ -52,8 +52,6 @@
 			</div>
 		</div>
 
-		<hr class="horizontal-line" />
-
 		<div class="content">
 			<table style="border-collapse: collapse;">
 				<colgroup>
@@ -69,12 +67,17 @@
 			<div id="empty-directory" class="empty">Directory is empty</div>
 		</div>
 
-		<hr class="horizontal-line" id="drop-line" style="display: none;" />
-
-		<div class="drop-zone" id="drop-visual" style="display: none;">
-			Drop files here or <span class="browse" id="browse-files">browse</span>
-			<br /><span class="detail" id="drop-visual-detail"></span>
-			<input type="file" style="display: none;" id="file-input" multiple />
+		<div class="footer" id="upload-visual" style="display: none;">
+			<div class="drop-zone">
+				Drop or browse for <span class="browse" id="browse-files">files</span> or <span class="browse" id="browse-directories">directories</span>
+				<br /><span class="detail" id="drop-visual-detail"></span>
+				<input type="file" style="display: none;" id="file-input" multiple />
+			</div>
+			<div style="height: 100%; background-color: #00000030;">
+				<div class="create button">
+					<div class="icon" id="icon-create"></div>
+				</div>
+			</div>
 		</div>
 
 		<div class="drop-zone drop" id="drop-zone">

@@ -1,4 +1,43 @@
 {
-    "type": "module",
-    "private": true
+	"name": "@bjoernboss/mws-files",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Module in TypeScript to share and files and directories - For Modular Web Server",
+	"license": "BSD-3-Clause",
+	"author": "Bjoern Boss Henrichsen <bjoernbossdev@gmail.com>",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/BjoernBoss/mws-files.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"main": "dist/files.js",
+	"types": "dist/files.d.ts",
+	"exports": {
+		".": {
+			"default": "./dist/files.js",
+			"types": "./dist/files.d.ts"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist/**/*.js",
+		"dist/**/*.d.ts",
+		"static/**/*",
+		"assets/**/*"
+	],
+	"scripts": {
+		"prepare": "tsc"
+	},
+	"dependencies": {
+		"@bjoernboss/mws": "^1.3.0"
+	},
+	"devDependencies": {
+		"@types/node": "^25.6.0",
+		"typescript": "^6.0.3"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	}
 }
