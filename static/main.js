@@ -3,6 +3,8 @@
 
 const REMOVE_NOTIFICATION_ANIMATION = 25;
 const FADE_NOTIFICATION_ANIMATION = 3500;
+const TRANSITION_OVERLAY_ANIMATION = 40;
+const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
 const _state = { list: [], loadedIcons: {}, config: {} };
@@ -80,8 +82,8 @@ _state.pushNotification = (body) => {
 		entry.animate([
 			{ height: `${entry.clientHeight}px`, easing: 'ease-in' },
 			{ height: '0', paddingTop: '0', paddingBottom: '0' }
-		], REMOVE_NOTIFICATION_ANIMATION);
-		setTimeout(() => host.removeChild(entry), REMOVE_NOTIFICATION_ANIMATION);
+		], { duration: REMOVE_NOTIFICATION_ANIMATION, fill: 'forwards' })
+			.onfinish = () => host.removeChild(entry);
 	};
 	return (fast) => {
 		if (fast) {
@@ -94,8 +96,8 @@ _state.pushNotification = (body) => {
 		entry.animate([
 			{ opacity: '1', easing: 'ease-in' },
 			{ opacity: '0.25' }
-		], FADE_NOTIFICATION_ANIMATION);
-		setTimeout(() => close.onclick(), FADE_NOTIFICATION_ANIMATION);
+		], { duration: FADE_NOTIFICATION_ANIMATION, fill: 'forwards' })
+			.onfinish = () => close.onclick();
 	};
 }
 
@@ -174,6 +176,57 @@ _state.makeStaticText = (text, status) => {
 	return element;
 }
 
+_state.showMenu = (entries) => {
+	const content = document.getElementById('menu-content');
+
+	/* iterate over the entries and add them */
+	let index = 0;
+	for (const entry of entries) {
+		if (index >= content.children.length) {
+			const option = document.createElement('div');
+			option.classList.add('button');
+			content.appendChild(option);
+
+			const separator = document.createElement('div');
+			separator.classList.add('separator');
+			content.appendChild(separator);
+		}
+
+		content.children[index].innerText = entry[0];
+		content.children[index].onclick = () => {
+			_state.updateOverlay('menu-overlay', false);
+			entry[1]();
+		}
+		index += 2;
+	}
+
+	/* remove any remaining entries and show the actual menu */
+	while (index < content.children.length)
+		content.lastChild.remove();
+	_state.updateOverlay('menu-overlay', true);
+}
+_state.updateOverlay = (name, show) => {
+	const overlay = document.getElementById(name);
+
+	/* manually animate, due to changing the display type */
+	if (show) {
+		overlay.classList.remove('hidden');
+
+		/* set the class-style again after finishing the animation, to
+		*	ensure overlayed show/hide's finalize with the proper result */
+		overlay.animate([
+			{ opacity: '0', paddingBottom: '5%', easing: 'ease-in' },
+			{ opacity: '1', paddingBottom: '0' }
+		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.remove('hidden');
+	}
+	else {
+		overlay.animate([
+			{ opacity: '1', paddingBottom: '0', easing: 'ease-out' },
+			{ opacity: '0', paddingBottom: '5%' }
+		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.add('hidden');
+	}
+}
+
 _state.uploadFile = (file, fileName, fileSize) => {
 	if (!_state.config.upload) {
 		_state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
@@ -211,11 +264,11 @@ _state.removeFile = (name) => {
 	}
 	console.log(`confirming removing [${name}]...`);
 	document.getElementById('remove-name').innerText = name;
-	document.getElementById('remove-dialog').style.display = 'flex';
+	_state.updateOverlay('remove-overlay', true);
 
 	document.getElementById('remove-confirm').onclick = () => {
 		console.log(`removing [${name}]...`);
-		document.getElementById('remove-dialog').style.display = 'none';
+		_state.updateOverlay('remove-overlay', false);
 
 		const [element, update] = _state.makeDelayedStatus(`Remove: ${name}`);
 		const fadeOut = _state.pushNotification(element);
@@ -401,35 +454,70 @@ window.onload = () => {
 			}
 		};
 
-		/* patch the browse to file-input dialog flow */
-		const fileInput = document.getElementById('file-input');
-		document.getElementById('browse-files').onclick = () => fileInput.click();
-		fileInput.onchange = () => {
-			for (const file of fileInput.files)
-				_state.uploadFile(file, file.name, file.size);
-			fileInput.value = '';
-		};
-
-		/* actually present the drop content and add the size constraints */
-		document.getElementById('upload-visual').style.display = 'flex';
+		/* update the drop animations and add the size constraints */
+		dropZone.style.setProperty('--animation-time', `${DROP_ZONE_ANIMATION}ms`);
 		if (_state.config.maxUploadSize != null) {
 			const text = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
 			document.getElementById('drop-detail').innerHTML = text;
-			document.getElementById('drop-visual-detail').innerHTML = text;
 		}
+
+		/* show and wire up the create button */
+		document.getElementById('create-wrap').classList.remove('hidden');
+		document.getElementById('create-button').onclick = () => _state.showMenu([
+			['Create Directory', () => console.log('Create!')],
+			['Upload Files', () => {
+				const input = document.createElement('input');
+				input.type = 'file', input.multiple = true, input.onchange = () => {
+					for (const file of input.files)
+						_state.uploadFile(file, file.name, file.size);
+					input.value = '';
+				};
+				input.click();
+			}],
+			['Upload Directory', () => {
+				const input = document.createElement('input');
+				input.type = 'file', input.webkitdirectory = true, input.onchange = () => {
+					for (const file of input.files)
+						_state.uploadFile(file, file.name, file.size);
+					input.value = '';
+				};
+				input.click();
+			}]
+		]);
 	}
 
-	/* register all relevant delete dialog handler */
-	const removeDialog = document.getElementById('remove-dialog');
-	removeDialog.children[0].onmousedown = (e) => {
+	/* register all relevant delete overlay handler */
+	const removeOverlay = document.getElementById('remove-overlay');
+	removeOverlay.children[0].onmousedown = (e) => {
 		e.stopPropagation();
 	};
-	removeDialog.onmousedown = (e) => {
+	removeOverlay.onmousedown = (e) => {
 		e.preventDefault();
-		removeDialog.style.display = 'none';
+		_state.updateOverlay('remove-overlay', false);
 	};
 	document.getElementById('remove-abort').onclick = () => {
-		removeDialog.style.display = 'none';
+		_state.updateOverlay('remove-overlay', false);
+	};
+
+	/* register all relevant menu overlay handler */
+	const menuOverlay = document.getElementById('menu-overlay');
+	menuOverlay.children[0].onmousedown = (e) => {
+		e.stopPropagation();
+	};
+	menuOverlay.onmousedown = (e) => {
+		e.preventDefault();
+		_state.updateOverlay('menu-overlay', false);
+	};
+	document.getElementById('menu-abort').onclick = () => {
+		_state.updateOverlay('menu-overlay', false);
+	};
+
+	/* register convenience handlers for overlays */
+	document.onkeydown = (e) => {
+		if (e.key == 'Escape') {
+			_state.updateOverlay('menu-overlay', false);
+			_state.updateOverlay('remove-overlay', false);
+		}
 	};
 
 	/* load the initial content list */

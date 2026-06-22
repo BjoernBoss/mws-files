@@ -35,24 +35,23 @@
 		<div id="empty-directory" class="empty">Directory is empty</div>
 	</div>
 
-	<div class="footer" id="upload-visual" style="display: none;">
-		<div class="drop-zone">
-			Drop or browse for <span class="browse" id="browse-files">files</span> or <span class="browse" id="browse-directories">directories</span>
-			<br /><span class="detail" id="drop-visual-detail"></span>
-			<input type="file" style="display: none;" id="file-input" multiple />
-		</div>
-		<div style="height: 100%; background-color: #00000030;">
-			<div class="create button">
-				<div class="icon" id="icon-create"></div>
-			</div>
+	<div class="notifications" id="notifications">
+	</div>
+
+	<div class="modify hidden" id="create-wrap">
+		<div class="create button" id="create-button">
+			<div id="icon-create"></div>
 		</div>
 	</div>
 
-	<div class="drop-zone drop" id="drop-zone">
-		Drop files here<span class="detail" id="drop-detail"></span>
+	<div class="overlay hidden" id="menu-overlay">
+		<div class="menu">
+			<div id="menu-content"></div>
+			<div class="button abort" id="menu-abort">Cancel</div>
+		</div>
 	</div>
 
-	<div class="overlay" style="display: none;" id="remove-dialog">
+	<div class="overlay hidden" id="remove-overlay">
 		<div class="dialog">
 			<div class="caption">Do you want to permanently remove:</div>
 			<div class="name" id="remove-name">SomeName</div>
@@ -64,6 +63,7 @@
 		</div>
 	</div>
 
-	<div class="notifications" id="notifications">
+	<div class="drop-zone" id="drop-zone">
+		Drop files here...<span class="detail" id="drop-detail"></span>
 	</div>
 </div>
