@@ -1,14 +1,22 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2024-2026 Bjoern Boss Henrichsen */
 import * as mws from "@bjoernboss/mws";
+import * as libFs from "fs";
 import * as libFsPromises from "fs/promises";
 
 const MAX_UPLOAD_SIZE = 100_000_000;
+const WATCHER_GRACE_MS = 30 * 1000;
 
 interface DirEntry {
 	kind: string;
 	size: number;
 	modified: number;
+}
+interface DirListener {
+	ws: Set<mws.ClientSocket>;
+	timeout: NodeJS.Timeout | null;
+	close: () => void;
+	settled: boolean;
 }
 
 /**
@@ -22,14 +30,15 @@ export const Endpoints = {
 	/** directory for raw files and directory listings and views (GET, DELETE, POST; fully owned, auto-responds with 404) */
 	files: '/files',
 
-	/** directory for web-sockets */
-	__sockets: '/ws'
+	/** directory for web-sockets for change listener (fully owned, auto-responds with 404) */
+	sockets: '/ws'
 }
 
 export class FileShare extends mws.ModuleHandler {
 	private fileStorage: (path: string) => string;
 	private fileStatic: (path: string) => string;
 	private fileAssets: (path: string) => string;
+	private listener: Record<string, DirListener>;
 
 	constructor(dataPath: string) {
 		super('files');
@@ -37,6 +46,7 @@ export class FileShare extends mws.ModuleHandler {
 		this.fileStorage = mws.createPathLocation(dataPath);
 		this.fileStatic = mws.createPathSelf(import.meta.url, '../static');
 		this.fileAssets = mws.createPathSelf(import.meta.url, '../assets');
+		this.listener = {};
 	}
 
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
@@ -152,6 +162,7 @@ export class FileShare extends mws.ModuleHandler {
 			upload: true,
 			maxUploadSize: MAX_UPLOAD_SIZE,
 			basePath: path,
+			rootPath: client.makePath(Endpoints.files),
 			icons: {
 				back: this.staticPath(client, '/back-icon.svg'),
 				close: this.staticPath(client, '/close-icon.svg'),
@@ -181,15 +192,110 @@ export class FileShare extends mws.ModuleHandler {
 		});
 		await client.respondHtml(page, { status: mws.Status.Ok });
 	}
+	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
+		/* check if the listener needs to be created */
+		if (!(path in this.listener)) {
+			const filePath = this.fileStorage(path);
+			try {
+				/* ensure that the watched path is a directory */
+				const stats = libFs.statSync(filePath);
+				if (!stats.isDirectory())
+					throw new Error(`Can only watch directories`);
+				this.info(`Started listening for changes: [${filePath}]`);
+				const watcher = libFs.watch(filePath);
+
+				const entry: DirListener = {
+					timeout: null,
+					ws: new Set<mws.ClientSocket>(),
+					close: () => {
+						watcher.close();
+						this.info(`Stopped listening for changes: [${filePath}]`);
+					},
+					settled: false
+				};
+				const cleanup = (err: any, removed: boolean) => {
+					this.error(`Error while watching path [${filePath}]: ${err.message}`);
+
+					/* remove the entry and notify all listener */
+					delete this.listener[path];
+					entry.close();
+					entry.settled = true;
+					for (const ws of entry.ws) {
+						ws.send(removed ? 'removed' : 'error');
+						ws.close();
+					}
+				};
+				this.listener[path] = entry;
+
+				/* register the watcher listener */
+				watcher.on('change', () => {
+					/* ensure that the directory still exists */
+					try {
+						const stats = libFs.statSync(filePath);
+						if (!stats.isDirectory())
+							throw new Error(`Can only watch directories`);
+						for (const ws of entry.ws)
+							ws.send('change');
+					}
+					catch (err: any) {
+						cleanup(err, (err.code == 'ENOENT'));
+					}
+
+				});
+				watcher.on('error', (err: any) => cleanup(err, false));
+			}
+			catch (err: any) {
+				this.error(`Failed watching path [${filePath}]: ${err.message}`);
+				client.send('error');
+				client.close();
+				return;
+			}
+		}
+
+		/* add the web-socket to the listener and check if the closing timeout needs to be stopped */
+		const entry = this.listener[path];
+		entry.ws.add(client);
+		if (entry.timeout != null)
+			clearTimeout(entry.timeout);
+		entry.timeout = null;
+
+		/* no need to listen for data, as this is only a notification channel */
+		client.on('close', () => {
+			entry.ws.delete(client);
+
+			/* check if this was the last listener, and the watcher should be closed */
+			if (entry.ws.size != 0 || entry.settled)
+				return;
+			entry.timeout = setTimeout(() => {
+				delete this.listener[path];
+				entry.close();
+			}, WATCHER_GRACE_MS);
+		});
+	}
 	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
 		client.trace(`Files handler for [${client.path}]`);
 
 		/* check if its just static content to be served */
-		if (client.isInsideOf(Endpoints.static) && client.requireMethod('GET') != null)
-			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
+		if (client.isInsideOf(Endpoints.static)) {
+			if (client.requireMethod('GET') != null)
+				await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
+			return;
+		}
+
+		/* check if its one of the listener */
+		if (client.isSubPathOf(Endpoints.sockets)) {
+			const relativePath = client.getChildPath(Endpoints.sockets);
+
+			/* try to accept the web socket and handle it (await acceptance to ensure the
+			*	stop method is not entered before the full accept has been performed) */
+			const ws = await client.acceptWebSocket();
+			if (ws != null)
+				this.acceptWebSocket(ws, relativePath);
+			return;
+		}
 
 		/* check if its a request for the files API (allow root itself for reading it) */
-		else if (!client.isSubPathOf(Endpoints.files))
+		if (!client.isSubPathOf(Endpoints.files))
 			return;
 		const relativePath = client.getChildPath(Endpoints.files);
 		const filePath = this.fileStorage(relativePath);
@@ -238,5 +344,27 @@ export class FileShare extends mws.ModuleHandler {
 			client.respondNotFound();
 		}
 	}
-	protected override async handleStop(): Promise<void> { }
+	protected override async handleStop(): Promise<void> {
+		/* close all sockets (no new sockets can arrive anymore once the stop-handler has started) */
+		const promises: Promise<void>[] = [];
+		for (const path in this.listener) {
+			const entry = this.listener[path];
+			entry.settled = true;
+
+			for (const ws of entry.ws) {
+				ws.send('close');
+				promises.push(ws.close());
+			}
+		}
+		await Promise.all(promises);
+
+		/* reset all timers (after the closes have been processed, as they may otherwise re-start the last timer) */
+		for (const path in this.listener) {
+			const entry = this.listener[path];
+
+			if (entry.timeout != null)
+				clearTimeout(entry.timeout);
+			entry.close();
+		}
+	}
 }

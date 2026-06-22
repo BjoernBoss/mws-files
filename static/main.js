@@ -349,6 +349,7 @@ window.onload = () => {
 	if (_state.config.maxUploadSize != null && _state.config.maxUploadSize <= 0)
 		_state.config.upload = false;
 	_state.config.basePath = (__LOAD_PARAMS__?.basePath ?? '/bad_path');
+	_state.config.rootPath = (__LOAD_PARAMS__?.rootPath ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the location listener to ensure the location is scroll end-favoring
