@@ -2,9 +2,14 @@
 /* Copyright (c) 2024-2026 Bjoern Boss Henrichsen */
 import * as mws from "@bjoernboss/mws";
 import * as libFsPromises from "fs/promises";
-import * as libFs from "fs";
 
 const MAX_UPLOAD_SIZE = 100_000_000;
+
+interface DirEntry {
+	kind: string;
+	size: number;
+	modified: number;
+}
 
 /**
  *	Endpoints used by the module.
@@ -14,88 +19,28 @@ export const Endpoints = {
 	/** directory containting static assets (sparsely used) */
 	static: '/static',
 
-	/** directory for viewing files */
-	lobby: '/view',
-
-	/** directory for raw files (GET, DELETE, POST; fully owned, auto-responds with 404) */
-	files: '/raw',
+	/** directory for raw files and directory listings and views (GET, DELETE, POST; fully owned, auto-responds with 404) */
+	files: '/files',
 
 	/** directory for web-sockets */
-	sockets: '/ws'
+	__sockets: '/ws'
 }
 
 export class FileShare extends mws.ModuleHandler {
-	private templates: { entry: string, empty: string, page: string };
 	private fileStorage: (path: string) => string;
 	private fileStatic: (path: string) => string;
+	private fileAssets: (path: string) => string;
 
 	constructor(dataPath: string) {
 		super('files');
 
 		this.fileStorage = mws.createPathLocation(dataPath);
 		this.fileStatic = mws.createPathSelf(import.meta.url, '../static');
-		this.templates = {
-			empty: '',
-			entry: '',
-			page: libFs.readFileSync(this.fileStatic('/page.html'), 'utf-8')
-		};
+		this.fileAssets = mws.createPathSelf(import.meta.url, '../assets');
 	}
 
-	private async listDirectory(client: mws.ClientRequest, filePath: string): Promise<void> {
-		let content: string[];
-		try {
-			content = await libFsPromises.readdir(filePath);
-		}
-		catch (err: any) {
-			client.respondInternalError(`Filesystem error while reading directory [${filePath}]: ${err.message}`);
-			return;
-		}
-
-		/* cleanup the path to end in a slash */
-		let dirPath = client.url.pathname;
-		if (!dirPath.endsWith('/'))
-			dirPath = dirPath + '/';
-
-		/* check if the parent directory should be added */
-		const hasParent = (client.path != '/');
-
-		/* check if entries have been found */
-		let entries = '';
-		if (hasParent || content.length > 0) {
-			const teEntry = this.templates.entry;
-
-			/* add the parent entry */
-			if (hasParent) {
-				const parentPath = dirPath.substring(0, dirPath.lastIndexOf('/', dirPath.length - 2));
-				entries += mws.expandPlaceholders(teEntry, { path: parentPath, name: '..', type: 'dir' }, true);
-			}
-
-			/* expand all entries */
-			for (let i = 0; i < content.length; ++i) {
-				const childPath = dirPath + content[i];
-				let type = 'file';
-				try {
-					if ((await libFsPromises.stat(this.fileStorage(client.path + '/' + content[i]))).isDirectory())
-						type = 'dir';
-				} catch (_) { }
-
-				entries += mws.expandPlaceholders(teEntry, { path: childPath, name: content[i], type }, true);
-			}
-		}
-		else
-			entries = mws.expandPlaceholders(this.templates.empty, {}, true);
-
-		/* update the path to not contain the trailing slash */
-		if (dirPath != '/')
-			dirPath = dirPath.substring(0, dirPath.length - 1);
-
-		/* construct the final template and return it */
-		const out = mws.expandPlaceholders(this.templates.page, { path: client.path, basepath: '.', entries: entries }, false);
-		client.respond(out, { media: mws.Media.Html });
-	}
-
-	private async fetchDirectoryState(filePath: string): Promise<string> {
-		const out: Record<string, { kind: string, size: number, modified: number }> = {};
+	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
+		const out: Record<string, DirEntry> = {};
 
 		/* let errors propagate outward */
 		const content = await libFsPromises.readdir(filePath);
@@ -117,7 +62,7 @@ export class FileShare extends mws.ModuleHandler {
 				this.warning(`Error fetching information about directory entry [${childPath}]: ${err.message}`);
 			}
 		}
-		return JSON.stringify(out);
+		return out;
 	}
 	private async handleUpload(client: mws.ClientRequest, filePath: string): Promise<void> {
 		const kind = client.url.searchParams.get('kind') ?? 'file';
@@ -176,8 +121,78 @@ export class FileShare extends mws.ModuleHandler {
 			client.respondInternalError(`Failed to remove file [${filePath}]: ${err.message}`);
 		}
 	}
-	private async handleFiles(client: mws.ClientRequest, path: string): Promise<void> {
-		const filePath = this.fileStorage(path);
+	private async fetchBody(client: mws.ClientRequest, path: string): Promise<string | null> {
+		const fullPath = this.fileAssets(path);
+
+		/* look for the file */
+		try {
+			const data: Buffer | null = await this.cache.read(fullPath);
+			if (data == null) {
+				client.respondInternalError(`Failed to find content [${fullPath}]`);
+				return null;
+			}
+			return data.toString('utf-8');
+		}
+		catch (err: any) {
+			client.respondInternalError(`Failed to read content [${fullPath}]: ${err.message}`);
+			return null;
+		}
+	}
+	private staticPath(client: mws.ClientRequest, path: string): string {
+		return client.makePath(this.cache.immutable(this.name, mws.joinSanitized(Endpoints.static, path)));
+	}
+	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>): Promise<void> {
+		/* read the body */
+		const body: string | null = await this.fetchBody(client, '/page.html');
+		if (body == null)
+			return;
+
+		const loadParams: string = JSON.stringify({
+			delete: true,
+			upload: true,
+			maxUploadSize: MAX_UPLOAD_SIZE,
+			basePath: path,
+			icons: {
+				back: this.staticPath(client, '/back-icon.svg'),
+				close: this.staticPath(client, '/close-icon.svg'),
+				create: this.staticPath(client, '/create-icon.svg'),
+				delete: this.staticPath(client, '/delete-icon.svg'),
+				download: this.staticPath(client, '/download-icon.svg'),
+				home: this.staticPath(client, '/home-icon.svg')
+			},
+			content: list
+		});
+		const title = mws.splitFilePath(path).slice(1).join('');
+
+		/* add the required page headers and load the content from cache (prevent
+		*	user-zooming as this breaks viewport handling for keyboard-detection) */
+		const b = mws.build;
+		const page = new b.HtmlPage({
+			language: 'en',
+			head: [
+				b.Meta('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no'),
+				b.Title(`Directory ${title}`),
+				b.Meta('Description', `Content of directory ${path}`),
+				b.LoadStyle(this.staticPath(client, '/style.css')),
+				b.LoadScript(this.staticPath(client, '/main.js')),
+				b.AddScript(`__LOAD_PARAMS__=${loadParams}`)
+			],
+			body: b.Embed(body, true)
+		});
+		await client.respondHtml(page, { status: mws.Status.Ok });
+	}
+	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
+		client.trace(`Files handler for [${client.path}]`);
+
+		/* check if its just static content to be served */
+		if (client.isInsideOf(Endpoints.static) && client.requireMethod('GET') != null)
+			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
+
+		/* check if its a request for the files API (allow root itself for reading it) */
+		else if (!client.isSubPathOf(Endpoints.files))
+			return;
+		const relativePath = client.getChildPath(Endpoints.files);
+		const filePath = this.fileStorage(relativePath);
 
 		/* ensure the request is using a supported method */
 		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
@@ -185,7 +200,7 @@ export class FileShare extends mws.ModuleHandler {
 			return;
 
 		/* check if the method is allowed for the given endpoint */
-		if (path == '/' && method != 'GET')
+		if (relativePath == '/' && method != 'GET')
 			return client.respondForbidden('Root cannot be modified', { forwardReason: true });
 
 		/* check if the entry is to be deleted or uploaded */
@@ -197,47 +212,30 @@ export class FileShare extends mws.ModuleHandler {
 		try {
 			const stats = await libFsPromises.stat(filePath);
 
-			/* server the directory or file */
-			if (stats.isDirectory())
-				return client.respond(await this.fetchDirectoryState(filePath), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'File-Kind': 'directory' } });
-			else if (!stats.isFile())
-				this.warning(`Unsupported file-system object encountered: ${filePath}`);
-			else if (await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'File-Kind': 'file' } }))
-				return;
-		} catch (err: any) {
-			if (err.code != 'ENOENT')
-				client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
-		}
-		client.respondNotFound();
-	}
-	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
-		client.trace(`Files handler for [${client.path}]`);
-
-		/* check if its a request for the raw files API (allow root itself for reading it) */
-		if (client.isSubPathOf(Endpoints.files))
-			return this.handleFiles(client, client.getChildPath(Endpoints.files));
-
-		/* expand the path */
-		const filePath = this.fileStorage(client.path);
-
-		/* ensure the request is using a supported method */
-		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
-		if (method == null)
-			return;
-
-		/* check if the path exists in the filesystem */
-		try {
-			const stat = await libFsPromises.stat(filePath);
-
-			if (stat.isFile()) {
-				await client.tryRespondFile(filePath, { checkFreshness: true });
+			/* check if a file is to be served */
+			if (stats.isFile()) {
+				if (!await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'File-Kind': 'file' } }))
+					client.respondNotFound();
 				return;
 			}
-			else if (stat.isDirectory())
-				return this.listDirectory(client, filePath);
+
+			/* check if its an unknown type */
+			if (!stats.isDirectory()) {
+				this.warning(`Unsupported file-system object encountered: ${filePath}`);
+				return client.respondNotFound();
+			}
+			const list = await this.fetchDirectoryList(filePath);
+
+			/* check if the directory should be served in raw */
+			if (client.url.searchParams.get('raw') == 'true')
+				return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'File-Kind': 'directory' } });
+
+			/* build the view for the directory */
+			await this.buildView(client, relativePath, list);
 		} catch (err: any) {
 			if (err.code != 'ENOENT')
-				client.respondInternalError(`Filesystem error while processing [${filePath}]: ${err.message}`);
+				return client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
+			client.respondNotFound();
 		}
 	}
 	protected override async handleStop(): Promise<void> { }

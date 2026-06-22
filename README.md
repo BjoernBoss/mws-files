@@ -16,5 +16,5 @@ Afterwards, transpile the entire server application, and construct this module i
 
 ```JavaScript
 const m = await import("./share/share.js");
-server.listenHttp(93, new m.Share('path/to/shared/data'), null);
+server.listenHttp(93, new m.Share('path/to/shared/data'), (host) => host == 'localhost');
 ```

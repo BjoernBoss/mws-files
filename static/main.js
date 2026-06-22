@@ -5,14 +5,14 @@ const REMOVE_NOTIFICATION_ANIMATION = 25;
 const FADE_NOTIFICATION_ANIMATION = 3500;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
-const _state = { list: [], loadedIcons: {}, manifest: {} };
+const _state = { list: [], loadedIcons: {}, config: {} };
 
-_state.loadIcon = (placeholder, path) => {
+_state.loadIcon = (placeholder, name) => {
 	/* load the icons manually to ensure they are placed in-place and can be CSS modified */
 	const element = document.createElement('div');
 	element.classList.add('load-icon');
 
-	let entry = _state.loadedIcons[path] ?? null;
+	let entry = _state.loadedIcons[name] ?? null;
 
 	if (entry != null && entry.content != null) {
 		element.innerHTML = entry.content;
@@ -21,13 +21,13 @@ _state.loadIcon = (placeholder, path) => {
 
 	/* check if this is the initial request and trigger the fetch */
 	if (entry == null) {
-		entry = (_state.loadedIcons[path] = {
+		entry = (_state.loadedIcons[name] = {
 			content: null,
 			resolved: false,
 			queue: []
 		});
 
-		fetch(path).then((resp) => {
+		fetch(_state.config.icons[name] ?? '/bad_path').then((resp) => {
 			if (!resp.ok)
 				throw 0;
 			return resp.text();
@@ -57,7 +57,7 @@ _state.pushNotification = (body) => {
 	*	possible (as every notification would otherwise trigger the failure log) */
 	const close = document.createElement('div');
 	close.classList.add('button');
-	close.appendChild(_state.loadIcon('Close', './close-icon.svg'));
+	close.appendChild(_state.loadIcon('Close', 'close'));
 
 	const entry = document.createElement('div');
 	entry.classList.add('entry');
@@ -175,7 +175,7 @@ _state.makeStaticText = (text, status) => {
 }
 
 _state.uploadFile = (file, fileName, fileSize) => {
-	if (!_state.manifest.canUpload) {
+	if (!_state.config.upload) {
 		_state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
 		return;
 	}
@@ -183,12 +183,12 @@ _state.uploadFile = (file, fileName, fileSize) => {
 
 	const [element, update] = _state.makeUploadProgress(`Upload: ${fileName}`);
 	const fadeOut = _state.pushNotification(element);
-	if (fileSize > _state.manifest.maxUploadSize)
+	if (fileSize > _state.config.maxUploadSize)
 		return update(`Too large [${_state.formatSize(fileSize)}]`, false);
 	update(0, null);
 
 	const xhr = new XMLHttpRequest();
-	xhr.open('POST', `${_state.manifest.basePath}/${encodeURIComponent(fileName)}`, true);
+	xhr.open('POST', `${_state.config.basePath}/${encodeURIComponent(fileName)}`, true);
 	xhr.upload.onprogress = (e) => {
 		update(e.loaded / fileSize, null);
 	};
@@ -197,7 +197,7 @@ _state.uploadFile = (file, fileName, fileSize) => {
 			return update(`Error: ${xhr.statusText}`, false);
 
 		/* add the entry preemtively to the list */
-		_state.updateList(_state.list.concat([{ name: fileName, directory: false, details: fileSize }]));
+		_state.updateList(_state.list.concat([{ name: fileName, kind: 'file', size: fileSize }]));
 		update('Uploaded!', true);
 		fadeOut();
 	};
@@ -205,7 +205,7 @@ _state.uploadFile = (file, fileName, fileSize) => {
 	xhr.send(file);
 }
 _state.removeFile = (name) => {
-	if (!_state.manifest.canDelete) {
+	if (!_state.config.delete) {
 		_state.pushNotification(_state.makeStaticText('Not allowed to remove content', false));
 		return;
 	}
@@ -221,7 +221,7 @@ _state.removeFile = (name) => {
 		const fadeOut = _state.pushNotification(element);
 		update('Removing...', null);
 
-		fetch(`${_state.manifest.basePath}/${encodeURIComponent(name)}`, { method: 'DELETE' })
+		fetch(`${_state.config.basePath}/${encodeURIComponent(name)}`, { method: 'DELETE' })
 			.then((resp) => {
 				if (!resp.ok)
 					return update(`Error: ${resp.statusText}`, false);
@@ -254,8 +254,8 @@ _state.updateList = (content) => {
 
 	/* sort the content according to the presentation order */
 	const compare = (a, b) => {
-		if (a.directory != b.directory)
-			return (a.directory ? -1 : 1);
+		if (a.kind != b.kind)
+			return (a.kind == 'directory' ? -1 : 1);
 		return (a.name < b.name ? -1 : (a.name == b.name ? 0 : 1));
 	};
 	content.sort(compare);
@@ -282,7 +282,7 @@ _state.updateList = (content) => {
 
 			const _icon = document.createElement('div');
 			_icon.classList.add('icon');
-			_icon.innerText = (content[next].directory ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
+			_icon.innerText = (content[next].kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
 			const icon = document.createElement('td');
 			icon.appendChild(_icon);
 
@@ -300,15 +300,15 @@ _state.updateList = (content) => {
 
 			const _download = document.createElement('div');
 			_download.classList.add('download', 'button', 'option');
-			_download.appendChild(_state.loadIcon('Download', './download-icon.svg'));
+			_download.appendChild(_state.loadIcon('Download', 'download'));
 			const download = document.createElement('td');
 			download.appendChild(_download);
 
 			const remove = document.createElement('td');
-			if (_state.manifest.canDelete) {
+			if (_state.config.delete) {
 				const _remove = document.createElement('div');
 				_remove.classList.add('delete', 'button', 'option');
-				_remove.appendChild(_state.loadIcon('Delete', './delete-icon.svg'));
+				_remove.appendChild(_state.loadIcon('Delete', 'delete'));
 				remove.appendChild(_remove);
 			}
 
@@ -319,19 +319,19 @@ _state.updateList = (content) => {
 			row.appendChild(remove);
 
 			host.insertBefore(row, (hasPrev ? _state.list[prev].html : null));
-			_state.list.splice(prev, 0, { directory: content[next].directory, name: content[next].name, html: row });
+			_state.list.splice(prev, 0, { kind: content[next].kind, name: content[next].name, html: row });
 		}
 
 		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
 		const entry = _state.list[prev];
-		entry.details = content[next].details;
-		if (content[next].directory)
-			entry.html.children[2].children[0].innerText = `${content[next].details} Items`;
+		entry.size = content[next].size;
+		if (content[next].kind == 'directory')
+			entry.html.children[2].children[0].innerText = `${content[next].size} Items`;
 		else
-			entry.html.children[2].children[0].innerText = _state.formatSize(content[next].details);
+			entry.html.children[2].children[0].innerText = _state.formatSize(content[next].size);
 
 		/* patch the remove button */
-		if (_state.manifest.canDelete)
+		if (_state.config.delete)
 			entry.html.children[4].children[0].onclick = () => _state.removeFile(entry.name);
 		++next, ++prev;
 	}
@@ -342,13 +342,14 @@ _state.updateList = (content) => {
 }
 
 window.onload = () => {
-	/* parse the manifest */
-	_state.manifest.canDelete = (LOAD_CONFIG.manifest?.canDelete ?? false);
-	_state.manifest.canUpload = (LOAD_CONFIG.manifest?.canUpload ?? false);
-	_state.manifest.maxUploadSize = (_state.manifest.canUpload ? (LOAD_CONFIG.manifest?.maxUploadSize ?? null) : 0);
-	if (_state.manifest.maxUploadSize != null && _state.manifest.maxUploadSize <= 0)
-		_state.manifest.canUpload = false;
-	_state.manifest.basePath = (LOAD_CONFIG.manifest?.basePath ?? '');
+	/* parse the initial configuration */
+	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
+	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
+	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
+	if (_state.config.maxUploadSize != null && _state.config.maxUploadSize <= 0)
+		_state.config.upload = false;
+	_state.config.basePath = (__LOAD_PARAMS__?.basePath ?? '/bad_path');
+	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the location listener to ensure the location is scroll end-favoring
 	*	(to preserve the closer parents on small views; initialize for initial load) */
@@ -363,12 +364,12 @@ window.onload = () => {
 	}).observe(location);
 
 	/* setup the initial icons to be loaded */
-	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', './back-icon.svg'));
-	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', './home-icon.svg'));
-	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', './create-icon.svg'));
+	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', 'back'));
+	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', 'home'));
+	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', 'create'));
 
 	/* register the drag-and-drop handlers for the UI */
-	if (_state.manifest.canUpload) {
+	if (_state.config.upload) {
 		const dropDetector = document.getElementById('body');
 		const dropZone = document.getElementById('drop-zone');
 		let dropCountDepth = 0;
@@ -410,8 +411,8 @@ window.onload = () => {
 
 		/* actually present the drop content and add the size constraints */
 		document.getElementById('upload-visual').style.display = 'flex';
-		if (_state.manifest.maxUploadSize != null) {
-			const text = `(Max. ${_state.formatSize(_state.manifest.maxUploadSize)})`;
+		if (_state.config.maxUploadSize != null) {
+			const text = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
 			document.getElementById('drop-detail').innerHTML = text;
 			document.getElementById('drop-visual-detail').innerHTML = text;
 		}
@@ -431,5 +432,8 @@ window.onload = () => {
 	};
 
 	/* load the initial content list */
-	_state.updateList(LOAD_CONFIG.content ?? []);
+	const initList = [];
+	for (const name in __LOAD_PARAMS__?.content ?? {})
+		initList.push({ name, ...__LOAD_PARAMS__.content[name] });
+	_state.updateList(initList);
 }

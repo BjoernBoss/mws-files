@@ -1,0 +1,69 @@
+<div class="main-body" id="body">
+	<div class="navigation">
+		<div class="wrapper">
+			<div class="component button">
+				<div class="icon" id="icon-parent">
+				</div>
+			</div>
+		</div>
+		<div class="wrapper location" id="location">
+			<div class="component button">
+				<div class="icon" id="icon-home">
+				</div>
+			</div>
+			<div class="separator">/</div>
+			<div class="component button">First Entry</div>
+			<div class="separator">/</div>
+			<div class="component button">Second</div>
+			<div class="separator">/</div>
+			<div class="component button">Third</div>
+		</div>
+	</div>
+
+	<div class="content">
+		<table style="border-collapse: collapse;">
+			<colgroup>
+				<col style="width: 0.001%;" />
+				<col style="width: auto;" />
+				<col style="width: 0.001%;" />
+				<col style="width: 0.001%;" />
+				<col style="width: 0.001%;" />
+			</colgroup>
+			<tbody id="content">
+			</tbody>
+		</table>
+		<div id="empty-directory" class="empty">Directory is empty</div>
+	</div>
+
+	<div class="footer" id="upload-visual" style="display: none;">
+		<div class="drop-zone">
+			Drop or browse for <span class="browse" id="browse-files">files</span> or <span class="browse" id="browse-directories">directories</span>
+			<br /><span class="detail" id="drop-visual-detail"></span>
+			<input type="file" style="display: none;" id="file-input" multiple />
+		</div>
+		<div style="height: 100%; background-color: #00000030;">
+			<div class="create button">
+				<div class="icon" id="icon-create"></div>
+			</div>
+		</div>
+	</div>
+
+	<div class="drop-zone drop" id="drop-zone">
+		Drop files here<span class="detail" id="drop-detail"></span>
+	</div>
+
+	<div class="overlay" style="display: none;" id="remove-dialog">
+		<div class="dialog">
+			<div class="caption">Do you want to permanently remove:</div>
+			<div class="name" id="remove-name">SomeName</div>
+			<div class="confirm">
+				<div class="button" style="width: 100px;" id="remove-confirm">Remove</div>
+				<div style="width: 15px;"></div>
+				<div class="button" style="width: 100px;" id="remove-abort">Cancel</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="notifications" id="notifications">
+	</div>
+</div>
