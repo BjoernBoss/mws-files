@@ -23,6 +23,12 @@
 .button {
 	--button-animations: 100ms;
 	transition: all var(--button-animations) ease;
+	cursor: pointer;
+}
+
+.button.disabled {
+	cursor: default;
+	color: #a0a0a0;
 }
 
 .button.toggled {
@@ -32,12 +38,10 @@
 @media (hover: hover) and (pointer: fine) {
 	.button:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000018;
-		cursor: pointer;
 	}
 
 	.button.toggled:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000058;
-		cursor: pointer;
 	}
 
 }
@@ -58,6 +62,11 @@
 	padding-bottom: 1em;
 	border-bottom: 1px solid #00000030;
 	margin-bottom: 1em;
+}
+
+.navigation a {
+	text-decoration: none;
+	color: unset;
 }
 
 .navigation .wrapper {
@@ -131,7 +140,7 @@
 	justify-content: center;
 	align-items: center;
 	text-decoration: none;
-	color: #202020;
+	color: unset;
 	gap: 0.4em;
 }
 

@@ -100,6 +100,19 @@ _state.pushNotification = (body) => {
 			.onfinish = () => close.onclick();
 	};
 }
+_state.buildPath = (...paths) => {
+	let out = _state.config.rootPath;
+
+	for (const p of paths) {
+		if (p == null) break;
+		if (out.endsWith('/'))
+			out += (p.startsWith('/') ? p.substring(1) : p);
+		else
+			out += (p.startsWith('/') ? p : `/${p}`);
+	}
+
+	return out;
+}
 
 _state.makeUploadProgress = (caption) => {
 	const upload = document.createElement('div');
@@ -355,7 +368,7 @@ _state.updateList = (content) => {
 			row.classList.add('row', 'button');
 
 			const entry = document.createElement('a');
-			entry.href = `./test`;
+			entry.href = _state.buildPath(_state.config.basePath, content[next].name);
 			entry.classList.add('entry');
 			row.appendChild(entry);
 
@@ -420,9 +433,42 @@ window.onload = () => {
 	_state.config.rootPath = (__LOAD_PARAMS__?.rootPath ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
+	/* setup the initial icons to be loaded */
+	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', 'back'));
+	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', 'home'));
+	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', 'create'));
+
+	/* build the location and setup the references references */
+	const location = document.getElementById('location');
+	const basePath = _state.config.basePath;
+	document.getElementById('button-home').href = _state.buildPath();
+	if (basePath == '/')
+		document.getElementById('button-parent').classList.add('disabled');
+	else {
+		document.getElementById('button-parent').href = _state.buildPath(basePath.substring(0, basePath.lastIndexOf('/')));
+
+		for (let i = 1, end = 0; i < basePath.length; i = end + 1) {
+			end = basePath.indexOf('/', i);
+			if (end < 0)
+				end = basePath.length;
+
+			if (i > 1) {
+				const separator = document.createElement('div');
+				separator.classList.add('separator');
+				separator.innerText = '/';
+				location.appendChild(separator);
+			}
+
+			const entry = document.createElement('a');
+			entry.href = _state.buildPath(basePath.substring(0, end));
+			entry.classList.add('component', 'button');
+			entry.innerText = basePath.substring(i, end);
+			location.appendChild(entry);
+		}
+	}
+
 	/* register the location listener to ensure the location is scroll end-favoring
 	*	(to preserve the closer parents on small views; initialize for initial load) */
-	const location = document.getElementById('location');
 	let lastWidth = location.clientWidth;
 	location.scrollLeft = location.scrollWidth - lastWidth;
 	new ResizeObserver(() => {
@@ -431,11 +477,6 @@ window.onload = () => {
 			location.scrollLeft = location.scrollWidth - width;
 		lastWidth = width;
 	}).observe(location);
-
-	/* setup the initial icons to be loaded */
-	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', 'back'));
-	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', 'home'));
-	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', 'create'));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
