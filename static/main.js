@@ -104,7 +104,6 @@ _state.buildPath = (...paths) => {
 	let out = _state.config.rootPath;
 
 	for (const p of paths) {
-		if (p == null) break;
 		if (out.endsWith('/'))
 			out += (p.startsWith('/') ? p.substring(1) : p);
 		else
@@ -388,8 +387,15 @@ _state.updateList = (content) => {
 
 			const info = document.createElement('div');
 			info.classList.add('info');
-			info.innerText = 'none';
 			details.appendChild(info);
+
+			const infoSize = document.createElement('div');
+			infoSize.innerText = 'size';
+			info.appendChild(infoSize);
+
+			const infoDate = document.createElement('div');
+			infoDate.innerText = 'date';
+			info.appendChild(infoDate);
 
 			const menu = document.createElement('div');
 			menu.classList.add('button', 'option');
@@ -402,11 +408,11 @@ _state.updateList = (content) => {
 
 		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
 		const entry = _state.list[prev], date = new Date(content[next].modified);
-		const when = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
 		if (content[next].kind == 'directory')
-			entry.html.children[0].children[1].children[1].innerText = `${content[next].size} Items \u{2022} ${when}`;
+			entry.html.children[0].children[1].children[1].children[0].innerText = `${content[next].size} Items`;
 		else
-			entry.html.children[0].children[1].children[1].innerText = `${_state.formatSize(content[next].size)} \u{2022} ${when}`;
+			entry.html.children[0].children[1].children[1].children[0].innerText = `${_state.formatSize(content[next].size)}`;
+		entry.html.children[0].children[1].children[1].children[1].innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
 
 		/* patch the menu button and right click */
 		entry.html.children[1].onclick = () => _state.showEntryMenu(entry.name);
