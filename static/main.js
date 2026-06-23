@@ -176,7 +176,13 @@ _state.makeStaticText = (text, status) => {
 	return element;
 }
 
-_state.showMenu = (entries) => {
+_state.showMenu = (name, entries) => {
+	if (name == null)
+		document.getElementById('menu-name').classList.add('hidden');
+	else {
+		document.getElementById('menu-name').classList.remove('hidden');
+		document.getElementById('menu-name').innerText = name;
+	}
 	const content = document.getElementById('menu-content');
 
 	/* iterate over the entries and add them */
@@ -187,17 +193,23 @@ _state.showMenu = (entries) => {
 			option.classList.add('button');
 			content.appendChild(option);
 
-			const separator = document.createElement('div');
-			separator.classList.add('separator');
-			content.appendChild(separator);
+			const text = document.createElement('div');
+			option.appendChild(text);
+
+			const icon = document.createElement('div');
+			icon.style.backgroundColor = 'red';
+			icon.style.width = '20px';
+			icon.style.height = '20px';
+			icon.style.marginLeft = '20px';
+			option.appendChild(icon);
 		}
 
-		content.children[index].innerText = entry[0];
+		content.children[index].children[0].innerText = entry[0];
 		content.children[index].onclick = () => {
 			_state.updateOverlay('menu-overlay', false);
 			entry[1]();
 		}
-		index += 2;
+		++index;
 	}
 
 	/* remove any remaining entries and show the actual menu */
@@ -225,6 +237,13 @@ _state.updateOverlay = (name, show) => {
 			{ opacity: '0', paddingBottom: '5%' }
 		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.add('hidden');
 	}
+}
+_state.showEntryMenu = (name) => {
+	_state.showMenu(name, [
+		['Download', () => { }],
+		['Rename', () => { }],
+		['Delete', () => { }]
+	]);
 }
 
 _state.uploadFile = (file, fileName, fileSize) => {
@@ -351,25 +370,16 @@ _state.updateList = (content) => {
 			const details = document.createElement('td');
 			details.appendChild(_details);
 
-			const _download = document.createElement('div');
-			_download.classList.add('download', 'button', 'option');
-			_download.appendChild(_state.loadIcon('Download', 'download'));
-			const download = document.createElement('td');
-			download.appendChild(_download);
-
-			const remove = document.createElement('td');
-			if (_state.config.delete) {
-				const _remove = document.createElement('div');
-				_remove.classList.add('delete', 'button', 'option');
-				_remove.appendChild(_state.loadIcon('Delete', 'delete'));
-				remove.appendChild(_remove);
-			}
+			const _menu = document.createElement('div');
+			_menu.classList.add('button', 'option');
+			_menu.appendChild(_state.loadIcon('Menu', 'menu'));
+			const menu = document.createElement('td');
+			menu.appendChild(_menu);
 
 			row.appendChild(icon);
 			row.appendChild(name);
 			row.appendChild(details);
-			row.appendChild(download);
-			row.appendChild(remove);
+			row.appendChild(menu);
 
 			host.insertBefore(row, (hasPrev ? _state.list[prev].html : null));
 			_state.list.splice(prev, 0, { kind: content[next].kind, name: content[next].name, html: row });
@@ -383,9 +393,12 @@ _state.updateList = (content) => {
 		else
 			entry.html.children[2].children[0].innerText = _state.formatSize(content[next].size);
 
-		/* patch the remove button */
-		if (_state.config.delete)
-			entry.html.children[4].children[0].onclick = () => _state.removeFile(entry.name);
+		/* patch the menu button and right click */
+		entry.html.children[3].children[0].onclick = () => _state.showEntryMenu(entry.name);
+		entry.html.oncontextmenu = (e) => {
+			e.preventDefault();
+			_state.showEntryMenu(entry.name);
+		};
 		++next, ++prev;
 	}
 
@@ -463,7 +476,7 @@ window.onload = () => {
 
 		/* show and wire up the create button */
 		document.getElementById('create-wrap').classList.remove('hidden');
-		document.getElementById('create-button').onclick = () => _state.showMenu([
+		document.getElementById('create-button').onclick = () => _state.showMenu(null, [
 			['Create Directory', () => console.log('Create!')],
 			['Upload Files', () => {
 				const input = document.createElement('input');

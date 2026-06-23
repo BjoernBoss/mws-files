@@ -29,7 +29,7 @@
 	background-color: #00000040;
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
 	.button:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000018;
 		cursor: pointer;
@@ -109,7 +109,7 @@
 	list-style: none;
 	width: 100%;
 	overflow: auto;
-	--sep-margin: 0.5em;
+	--sep-margin: 0.75em;
 }
 
 .content .entry {
@@ -136,38 +136,29 @@
 	font-size: 0.85em;
 	min-width: max-content;
 	color: #00000060;
-	margin-right: var(--sep-margin);
+	margin-right: calc(var(--sep-margin) * 1.45);
 }
 
 .content .entry .option {
-	margin: 3px var(--sep-margin) 3px 0;
+	margin: 4px var(--sep-margin) 4px 0;
 	padding: 1px;
 	border: 1px solid;
 	border-radius: 3px;
 	user-select: none;
-	width: 1.5em;
+	width: 1.6em;
 	display: flex;
-}
-
-.content .entry .download {
 	color: #00000060;
-	margin-right: calc(var(--sep-margin) / 2);
 }
 
-.content .entry .delete {
-	border-color: #d04040;
-	color: #d04040;
-}
-
-@media (hover: hover) {
-	.delete.button:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #d04040;
+@media (hover: hover) and (pointer: fine) {
+	.option.button:not(.disabled):hover:not(:has(.button:hover)) {
+		background-color: #00000060;
 		color: #e0e0e0;
 	}
 }
 
-.delete.button:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #b03030;
+.option.button:not(.disabled):active:not(:has(.button:hover)) {
+	background-color: #00000080;
 	color: #ffffff;
 }
 
@@ -312,15 +303,17 @@
 	overflow: hidden;
 }
 
-.menu .caption {
-	font-size: 1.3em;
+.menu .name {
+	font-size: 1.6em;
+	font-family: monospace;
 	padding: 15px 20px;
 	user-select: none;
 	text-align: center;
+	border-bottom: 1px solid #c0c0c0;
 }
 
-.menu .separator {
-	border-top: 1px solid #c0c0c0;
+.menu .name.hidden {
+	display: none;
 }
 
 .menu .button {
@@ -332,12 +325,13 @@
 	justify-content: center;
 	font-size: 1.2em;
 	height: 2em;
+	border-bottom: 1px solid #c0c0c0;
 }
 
 .menu .abort {
 	height: 2.5em;
 	background-color: unset;
-	font-size: 1.5em;
+	font-size: 1.3em;
 }
 
 .notifications {
@@ -449,4 +443,5 @@
 	height: 100%;
 	font-size: 0.75em;
 	overflow: hidden;
+	justify-content: center;
 }
