@@ -106,48 +106,71 @@
 
 .content {
 	flex: 1;
-	list-style: none;
 	width: 100%;
 	overflow: auto;
-	--sep-margin: 0.75em;
 }
 
-.content .entry {
-	height: 1.75em;
+.content .window {
+	min-width: max-content;
 }
 
-.content .entry+.entry {
+.content .row {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	padding: 3px 0.4em;
+}
+
+.content .row+.row {
 	border-top: 1px solid #00000018;
 }
 
-.content .entry .icon {
-	margin: 0 var(--sep-margin);
+.content .entry {
+	flex: 1;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	text-decoration: none;
+	color: #202020;
+	gap: 0.4em;
+}
+
+.content .row .icon {
 	user-select: none;
+	font-size: 1.2em;
 }
 
-.content .entry .name {
+.content .row .details {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-right: 1em;
+}
+
+.content .row .details .name {
 	font-family: monospace;
+	font-size: 1.05em;
 	min-width: max-content;
-	margin-right: var(--sep-margin);
 }
 
-.content .entry .details {
+.content .row .details .info {
 	font-family: monospace;
-	font-size: 0.85em;
+	font-size: 0.8em;
 	min-width: max-content;
 	color: #00000060;
-	margin-right: calc(var(--sep-margin) * 1.45);
 }
 
-.content .entry .option {
-	margin: 4px var(--sep-margin) 4px 0;
-	padding: 1px;
+.content .row .option {
+	margin: 0 5px;
+	padding: 2px;
 	border: 1px solid;
 	border-radius: 3px;
 	user-select: none;
-	width: 1.6em;
+	min-width: 1.6em;
 	display: flex;
 	color: #00000060;
+
 }
 
 @media (hover: hover) and (pointer: fine) {

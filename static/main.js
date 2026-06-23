@@ -242,7 +242,9 @@ _state.showEntryMenu = (name) => {
 	_state.showMenu(name, [
 		['Download', () => { }],
 		['Rename', () => { }],
-		['Delete', () => { }]
+		['Delete', () => { }],
+		['Open', () => { }],
+		['Copy URL', () => { }]
 	]);
 }
 
@@ -349,36 +351,36 @@ _state.updateList = (content) => {
 
 		/* check if an entry needs to be added */
 		if (cmp > 0) {
-			const row = document.createElement('tr');
-			row.classList.add('entry', 'button');
+			const row = document.createElement('div');
+			row.classList.add('row', 'button');
 
-			const _icon = document.createElement('div');
-			_icon.classList.add('icon');
-			_icon.innerText = (content[next].kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
-			const icon = document.createElement('td');
-			icon.appendChild(_icon);
+			const entry = document.createElement('a');
+			entry.href = `./test`;
+			entry.classList.add('entry');
+			row.appendChild(entry);
 
-			const _name = document.createElement('div');
-			_name.classList.add('name');
-			_name.innerText = content[next].name;
-			const name = document.createElement('td');
-			name.appendChild(_name);
+			const icon = document.createElement('div');
+			icon.classList.add('icon');
+			icon.innerText = (content[next].kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
+			entry.appendChild(icon);
 
-			const _details = document.createElement('div');
-			_details.classList.add('details');
-			_details.innerText = 'none';
-			const details = document.createElement('td');
-			details.appendChild(_details);
+			const details = document.createElement('div');
+			details.classList.add('details');
+			entry.appendChild(details);
 
-			const _menu = document.createElement('div');
-			_menu.classList.add('button', 'option');
-			_menu.appendChild(_state.loadIcon('Menu', 'menu'));
-			const menu = document.createElement('td');
-			menu.appendChild(_menu);
+			const name = document.createElement('div');
+			name.classList.add('name');
+			name.innerText = content[next].name;
+			details.appendChild(name);
 
-			row.appendChild(icon);
-			row.appendChild(name);
-			row.appendChild(details);
+			const info = document.createElement('div');
+			info.classList.add('info');
+			info.innerText = 'none';
+			details.appendChild(info);
+
+			const menu = document.createElement('div');
+			menu.classList.add('button', 'option');
+			menu.appendChild(_state.loadIcon('Menu', 'menu'));
 			row.appendChild(menu);
 
 			host.insertBefore(row, (hasPrev ? _state.list[prev].html : null));
@@ -386,15 +388,15 @@ _state.updateList = (content) => {
 		}
 
 		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
-		const entry = _state.list[prev];
-		entry.size = content[next].size;
+		const entry = _state.list[prev], date = new Date(content[next].modified);
+		const when = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
 		if (content[next].kind == 'directory')
-			entry.html.children[2].children[0].innerText = `${content[next].size} Items`;
+			entry.html.children[0].children[1].children[1].innerText = `${content[next].size} Items \u{2022} ${when}`;
 		else
-			entry.html.children[2].children[0].innerText = _state.formatSize(content[next].size);
+			entry.html.children[0].children[1].children[1].innerText = `${_state.formatSize(content[next].size)} \u{2022} ${when}`;
 
 		/* patch the menu button and right click */
-		entry.html.children[3].children[0].onclick = () => _state.showEntryMenu(entry.name);
+		entry.html.children[1].onclick = () => _state.showEntryMenu(entry.name);
 		entry.html.oncontextmenu = (e) => {
 			e.preventDefault();
 			_state.showEntryMenu(entry.name);
