@@ -17,11 +17,12 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
+	--button-animations: 100ms;
+	--drop-zone-animations: 200ms;
 }
 
 /* buttons support [disabled] and [toggled] */
 .button {
-	--button-animations: 100ms;
 	transition: all var(--button-animations) ease;
 	cursor: pointer;
 }
@@ -193,13 +194,13 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-	.option.button:not(.disabled):hover:not(:has(.button:hover)) {
+	.content .row .option.button:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000060;
 		color: #e0e0e0;
 	}
 }
 
-.option.button:not(.disabled):active:not(:has(.button:hover)) {
+.content .row .option.button:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #00000080;
 	color: #ffffff;
 }
@@ -226,12 +227,24 @@
 	border: 1px solid #404040;
 	background-color: #d0d0d0;
 	border-radius: 16px;
+	box-shadow: #a0a0a0 6px 6px 6px;
+	transition: box-shadow var(--button-animations) ease;
 }
 
 .modify .button {
-	padding: 1em;
+	padding: 0.75em;
 	width: 100%;
 	height: 100%;
+}
+
+@media (hover: hover) and (pointer: fine) {
+	.modify:hover {
+		box-shadow: #909090 3.5px 3.5px 3.5px;
+	}
+}
+
+.modify:active {
+	box-shadow: #808080 2px 2px 2px;
 }
 
 .modify.hidden {
@@ -260,8 +273,8 @@
 	justify-content: center;
 	opacity: 0;
 	pointer-events: none;
-	transition: height var(--animation-time) ease,
-		opacity var(--animation-time) calc(var(--animation-time) / 3);
+	transition: height var(--drop-zone-animations) ease,
+		opacity var(--drop-zone-animations) calc(var(--drop-zone-animations) / 3);
 }
 
 .drop-zone .detail {
@@ -272,8 +285,8 @@
 	pointer-events: all;
 	height: calc(100% - 2em);
 	opacity: 1;
-	transition: opacity var(--animation-time),
-		height var(--animation-time) ease calc(var(--animation-time) / 3);
+	transition: opacity var(--drop-zone-animations),
+		height var(--drop-zone-animations) ease calc(var(--drop-zone-animations) / 3);
 }
 
 .overlay {
@@ -341,42 +354,78 @@
 	align-self: center;
 	border-radius: 6px;
 	border: 1px solid #202020;
-	background-color: #f0f0f0;
-	min-width: max(20em, 30%);
+	background-color: #e8e8e8;
+	min-width: max(15em, 30%);
 	margin: 1em;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
 }
 
-.menu .name {
+.menu .which {
 	font-size: 1.6em;
 	font-family: monospace;
 	padding: 15px 20px;
 	user-select: none;
 	text-align: center;
 	border-bottom: 1px solid #c0c0c0;
+
 }
 
-.menu .name.hidden {
+.menu .which.hidden {
 	display: none;
 }
 
-.menu .button {
+.menu .which .text {
+	background-color: #ffffff;
+	padding: 4px;
+	border-radius: 5px;
+}
+
+.menu .option {
 	user-select: none;
 	background-color: #ffffff;
-	padding: 1px 0px 3px;
-	display: flex;
 	align-items: center;
-	justify-content: center;
 	font-size: 1.2em;
-	height: 2em;
 	border-bottom: 1px solid #c0c0c0;
+	padding: 8px;
+	gap: 15px;
+	width: 100%;
+	display: flex;
+}
+
+.menu .option .text {
+	flex: 1;
+}
+
+.menu .option .icon {
+	padding-top: 2px;
+	width: 1.2em;
+	height: 100%;
+}
+
+.menu .option.button.delete {
+	color: #d04040;
+}
+
+@media (hover: hover)and (pointer: fine) {
+	.option.button.delete:not(.disabled):hover:not(:has(.button:hover)) {
+		background-color: #d04040;
+		color: #e0e0e0;
+	}
+}
+
+.option.button.delete:not(.disabled):active:not(:has(.button:hover)) {
+	background-color: #b03030;
+	color: #ffffff;
 }
 
 .menu .abort {
+	user-select: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	height: 2.5em;
-	background-color: unset;
 	font-size: 1.3em;
 }
 

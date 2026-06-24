@@ -1,5 +1,6 @@
-<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-	<path d="M12 3V21" stroke="currentColor" stroke-width="3px" stroke-linecap="round" stroke-linejoin="round" />
-	<path d="M3 12H21" stroke="currentColor" stroke-width="3px" stroke-linecap="round" stroke-linejoin="round" />
+	<path d="M12 4.5V19.5" stroke="currentColor" stroke-width="2.5px" stroke-linecap="round" stroke-linejoin="round" />
+	<path d="M4.5 12H19.5" stroke="currentColor" stroke-width="2.5px" stroke-linecap="round" stroke-linejoin="round" />
 </svg>

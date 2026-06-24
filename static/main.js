@@ -7,6 +7,8 @@ const TRANSITION_OVERLAY_ANIMATION = 40;
 const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
+const EMOJI_DIRECTORY = '\u{1F4C1}';
+const EMOJI_FILE = '\u{1F4C4}';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
@@ -101,17 +103,20 @@ _state.pushNotification = (body) => {
 			.onfinish = () => close.onclick();
 	};
 }
-_state.buildPath = (...paths) => {
-	let out = _state.config.rootPath;
-
+_state.appendToPath = (...paths) => {
+	let out = '/';
 	for (const p of paths) {
 		if (out.endsWith('/'))
 			out += (p.startsWith('/') ? p.substring(1) : p);
 		else
 			out += (p.startsWith('/') ? p : `/${p}`);
 	}
-
 	return out;
+}
+_state.buildPath = (base, ...paths) => {
+	if (base)
+		return _state.appendToPath(_state.config.rootPath, _state.config.basePath, ...paths);
+	return _state.appendToPath(_state.config.rootPath, ...paths);
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {
@@ -201,12 +206,12 @@ _state.makeStaticText = (text, status) => {
 	return element;
 }
 
-_state.showMenu = (name, entries) => {
-	if (name == null)
-		document.getElementById('menu-name').classList.add('hidden');
+_state.showMenu = (which, entries) => {
+	if (which == null)
+		document.getElementById('menu-which').classList.add('hidden');
 	else {
-		document.getElementById('menu-name').classList.remove('hidden');
-		document.getElementById('menu-name').innerText = name;
+		document.getElementById('menu-which').classList.remove('hidden');
+		document.getElementById('menu-text').innerText = which;
 	}
 	const content = document.getElementById('menu-content');
 
@@ -215,24 +220,26 @@ _state.showMenu = (name, entries) => {
 	for (const entry of entries) {
 		if (index >= content.children.length) {
 			const option = document.createElement('div');
-			option.classList.add('button');
+			option.classList.add('button', 'option');
+			if (entry[0] == 'Delete')
+				option.classList.add('delete');
 			content.appendChild(option);
 
-			const text = document.createElement('div');
-			option.appendChild(text);
-
 			const icon = document.createElement('div');
-			icon.style.backgroundColor = 'red';
-			icon.style.width = '20px';
-			icon.style.height = '20px';
-			icon.style.marginLeft = '20px';
+			icon.classList.add('icon');
 			option.appendChild(icon);
+			if (entry[1] != null)
+				icon.appendChild(_state.loadIcon(entry[0], entry[1]))
+
+			const text = document.createElement('div');
+			text.classList.add('text');
+			option.appendChild(text);
 		}
 
-		content.children[index].children[0].innerText = entry[0];
+		content.children[index].children[1].innerText = entry[0];
 		content.children[index].onclick = () => {
 			_state.updateOverlay('menu-overlay', false);
-			entry[1]();
+			entry[2]();
 		}
 		++index;
 	}
@@ -263,27 +270,91 @@ _state.updateOverlay = (name, show) => {
 		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.add('hidden');
 	}
 }
-_state.showEntryMenu = (name) => {
+_state.showEntryMenu = (entry) => {
 	const resolveIndex = () => {
-		for (let i = 0; i < _state.list.length; ++i) {
-			if (_state.list[i].name == name)
-				return i;
-		}
-		_state.pushNotification(_state.makeStaticText(`[${name}] does not exist anymore`, false));
+		const index = _state.list.indexOf(entry);
+		if (index >= 0)
+			return index;
+		_state.pushNotification(_state.makeStaticText(`[${entry.name}] does not exist anymore`, false));
 		return null;
 	};
 
-	_state.showMenu(name, [
-		['Download', () => { }],
-		['Rename', () => {
+	_state.showMenu(_state.appendToPath(_state.config.basePath, entry.name), [
+		['Download', 'download', () => { }],
+		['Rename', null, () => {
 			const index = resolveIndex();
 			if (index != null)
 				_state.renameEntry(index);
 		}],
-		['Delete', () => { }],
-		['Open', () => { }],
-		['Copy URL', () => { }]
+		['Copy to...', null, () => { }],
+		['Move to...', null, () => { }],
+		['Open', null, () => { }],
+		['Copy URL', null, () => { }],
+		['Delete', 'delete', () => { }]
 	]);
+}
+_state.showCreateMenu = () => {
+	document.getElementById('menu-which').classList.add('hidden');
+	const content = document.getElementById('menu-content');
+
+	/* format the list properly */
+	while (content.children.length > 3)
+		content.lastChild.remove();
+	for (const child of content.children)
+		child.children[0].innerText = '';
+	while (content.children.length < 3) {
+		const option = document.createElement('div');
+		option.classList.add('button', 'option');
+		content.appendChild(option);
+
+		const icon = document.createElement('div');
+		icon.classList.add('icon');
+		option.appendChild(icon);
+
+		const text = document.createElement('div');
+		text.classList.add('text');
+		option.appendChild(text);
+	}
+
+	/* update the texts and icons */
+	content.children[0].children[0].innerText = EMOJI_DIRECTORY;
+	content.children[0].children[1].innerText = 'Create Directory'
+	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'))
+	content.children[1].children[1].innerText = 'Upload Files'
+	content.children[2].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'))
+	content.children[2].children[1].innerText = 'Upload Directory'
+
+	/* show the actual menu */
+	_state.updateOverlay('menu-overlay', true);
+
+	/* wire up the corresponding click logic */
+	content.children[0].onclick = () => {
+		_state.updateOverlay('menu-overlay', false);
+
+		_state.renameEntry(null);
+	};
+	content.children[1].onclick = () => {
+		_state.updateOverlay('menu-overlay', false);
+
+		const input = document.createElement('input');
+		input.type = 'file', input.multiple = true, input.onchange = () => {
+			for (const file of input.files)
+				_state.uploadFile(file, file.name, file.size);
+			input.value = '';
+		};
+		input.click();
+	};
+	content.children[2].onclick = () => {
+		_state.updateOverlay('menu-overlay', false);
+
+		const input = document.createElement('input');
+		input.type = 'file', input.webkitdirectory = true, input.onchange = () => {
+			for (const file of input.files)
+				_state.uploadFile(file, file.name, file.size);
+			input.value = '';
+		};
+		input.click();
+	};
 }
 
 _state.renameEntry = (index) => {
@@ -330,7 +401,7 @@ _state.renameEntry = (index) => {
 			const [element, update] = _state.makeDelayedStatus(`Create Directory: ${fileName}`);
 			const fadeOut = _state.pushNotification(element);
 			update('Creating...', null);
-			fetch(_state.buildPath(_state.config.basePath, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
+			fetch(_state.buildPath(true, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
 				.then((resp) => {
 					if (!resp.ok)
 						return update(`Error: ${resp.statusText}`, false);
@@ -439,7 +510,7 @@ _state.removeFile = (name) => {
 		const fadeOut = _state.pushNotification(element);
 		update('Removing...', null);
 
-		fetch(_state.buildPath(_state.config.basePath, encodeURIComponent(name)), { method: 'DELETE' })
+		fetch(_state.buildPath(true, encodeURIComponent(name)), { method: 'DELETE' })
 			.then((resp) => {
 				if (!resp.ok)
 					return update(`Error: ${resp.statusText}`, false);
@@ -458,13 +529,13 @@ _state.createListEntry = (parmas) => {
 	row.classList.add('row', 'button');
 
 	const entry = document.createElement('a');
-	entry.href = _state.buildPath(_state.config.basePath, parmas.name);
+	entry.href = _state.buildPath(true, parmas.name);
 	entry.classList.add('entry');
 	row.appendChild(entry);
 
 	const icon = document.createElement('div');
 	icon.classList.add('icon');
-	icon.innerText = (parmas.kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
+	icon.innerText = (parmas.kind == 'directory' ? EMOJI_DIRECTORY : EMOJI_FILE);
 	entry.appendChild(icon);
 
 	const details = document.createElement('div');
@@ -548,11 +619,11 @@ _state.updateList = (content) => {
 		}
 
 		/* patch the menu button and right click */
-		entry.html.menu.onclick = () => _state.showEntryMenu(entry.name);
+		entry.html.menu.onclick = () => _state.showEntryMenu(entry);
 		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
 		entry.html.row.oncontextmenu = (e) => {
 			e.preventDefault();
-			_state.showEntryMenu(entry.name);
+			_state.showEntryMenu(entry);
 		};
 		++next, ++prev;
 	}
@@ -584,11 +655,11 @@ window.onload = () => {
 	/* build the location and setup the references references */
 	const location = document.getElementById('location');
 	const basePath = _state.config.basePath;
-	document.getElementById('button-home').href = _state.buildPath();
+	document.getElementById('button-home').href = _state.buildPath(false);
 	if (basePath == '/')
 		document.getElementById('button-parent').classList.add('disabled');
 	else {
-		document.getElementById('button-parent').href = _state.buildPath(basePath.substring(0, basePath.lastIndexOf('/')));
+		document.getElementById('button-parent').href = _state.buildPath(false, basePath.substring(0, basePath.lastIndexOf('/')));
 
 		for (let i = 1, end = 0; i < basePath.length; i = end + 1) {
 			end = basePath.indexOf('/', i);
@@ -603,7 +674,7 @@ window.onload = () => {
 			}
 
 			const entry = document.createElement('a');
-			entry.href = _state.buildPath(basePath.substring(0, end));
+			entry.href = _state.buildPath(false, basePath.substring(0, end));
 			entry.classList.add('component', 'button');
 			entry.innerText = basePath.substring(i, end);
 			location.appendChild(entry);
@@ -654,7 +725,7 @@ window.onload = () => {
 		};
 
 		/* update the drop animations and add the size constraints */
-		dropZone.style.setProperty('--animation-time', `${DROP_ZONE_ANIMATION}ms`);
+		dropZone.style.setProperty('--drop-zone-animations', `${DROP_ZONE_ANIMATION}ms`);
 		if (_state.config.maxUploadSize != null) {
 			const text = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
 			document.getElementById('drop-detail').innerHTML = text;
@@ -662,27 +733,7 @@ window.onload = () => {
 
 		/* show and wire up the create button */
 		document.getElementById('create-wrap').classList.remove('hidden');
-		document.getElementById('create-button').onclick = () => _state.showMenu(null, [
-			['Create Directory', () => _state.renameEntry(null)],
-			['Upload Files', () => {
-				const input = document.createElement('input');
-				input.type = 'file', input.multiple = true, input.onchange = () => {
-					for (const file of input.files)
-						_state.uploadFile(file, file.name, file.size);
-					input.value = '';
-				};
-				input.click();
-			}],
-			['Upload Directory', () => {
-				const input = document.createElement('input');
-				input.type = 'file', input.webkitdirectory = true, input.onchange = () => {
-					for (const file of input.files)
-						_state.uploadFile(file, file.name, file.size);
-					input.value = '';
-				};
-				input.click();
-			}]
-		]);
+		document.getElementById('create-button').onclick = () => _state.showCreateMenu();
 	}
 
 	/* register all relevant delete overlay handler */

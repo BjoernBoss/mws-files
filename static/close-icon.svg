@@ -1,4 +1,5 @@
-<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 	<path d="M3 3L21 21" stroke="currentColor" stroke-width="3px" stroke-linecap="round" stroke-linejoin="round" />
 	<path d="M3 21L21 3" stroke="currentColor" stroke-width="3px" stroke-linecap="round" stroke-linejoin="round" />
