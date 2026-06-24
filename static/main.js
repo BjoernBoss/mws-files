@@ -7,7 +7,9 @@ const TRANSITION_OVERLAY_ANIMATION = 40;
 const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
-const _state = { list: [], loadedIcons: {}, config: {} };
+const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
+const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
+const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
 
 _state.loadIcon = (placeholder, name) => {
 	/* load the icons manually to ensure they are placed in-place and can be CSS modified */
@@ -51,7 +53,6 @@ _state.loadIcon = (placeholder, name) => {
 	element.innerHTML = placeholder;
 	return element;
 }
-
 _state.pushNotification = (body) => {
 	const host = document.getElementById('notifications');
 
@@ -112,7 +113,19 @@ _state.buildPath = (...paths) => {
 
 	return out;
 }
-
+_state.formatSize = (size) => {
+	for (const option of UNIT_PREFIX_LIST) {
+		if (size < option[0] && option[0] > 0)
+			continue;
+		if (option[1] == '')
+			return `${size} Bytes`;
+		size /= option[0];
+		if (size > 1000)
+			return `${Math.round(size)} ${option[1]}B`;
+		else
+			return `${(size).toPrecision(3)} ${option[1]}B`;
+	}
+}
 _state.makeUploadProgress = (caption) => {
 	const upload = document.createElement('div');
 	upload.classList.add('upload');
@@ -251,15 +264,134 @@ _state.updateOverlay = (name, show) => {
 	}
 }
 _state.showEntryMenu = (name) => {
+	const resolveIndex = () => {
+		for (let i = 0; i < _state.list.length; ++i) {
+			if (_state.list[i].name == name)
+				return i;
+		}
+		_state.pushNotification(_state.makeStaticText(`[${name}] does not exist anymore`, false));
+		return null;
+	};
+
 	_state.showMenu(name, [
 		['Download', () => { }],
-		['Rename', () => { }],
+		['Rename', () => {
+			const index = resolveIndex();
+			if (index != null)
+				_state.renameEntry(index);
+		}],
 		['Delete', () => { }],
 		['Open', () => { }],
 		['Copy URL', () => { }]
 	]);
 }
 
+_state.renameEntry = (index) => {
+	/* check if the fake entry needs to be created */
+	if (index == null) {
+		if (_state.listFake == null) {
+			_state.listFake = _state.createListEntry({ name: '', kind: 'directory', size: 0, modified: 0 });
+			const host = document.getElementById('content');
+			host.insertBefore(_state.listFake.html.row, host.children[0]);
+		}
+		_state.listFake.name = 'New Directory';
+		_state.listFake.html.name.innerText = 'New Directory';
+		_state.updateList(null);
+	}
+	const entry = (index == null ? _state.listFake : _state.list[index]);
+	const name = entry.html.name;
+
+	let settled = false;
+	const checkOperation = () => {
+		if (settled) return false; settled = true;
+		if (index == null) return true;
+
+		/* check if the html element still exists and the entry still exists in the list */
+		if (name.isConnected && _state.list.indexOf(entry) >= 0)
+			return true;
+		_state.pushNotification(_state.makeStaticText(`[${entry.name}] does not exist anymore`, false));
+		return false;
+	};
+	const confirmRename = () => {
+		window.getSelection().removeAllRanges();
+
+		/* check if nothing needs to be done */
+		const fileName = name.innerText.trim();
+		cleanupRename();
+		if (index != null && entry.name == fileName)
+			return;
+
+		/* check if the name is valid */
+		if (!fileName.match(VALID_NAME_REGEX))
+			return _state.pushNotification(_state.makeStaticText(`[${fileName}] is not a valid name`, false));
+
+		/* check if a directory is being created */
+		if (index == null) {
+			const [element, update] = _state.makeDelayedStatus(`Create Directory: ${fileName}`);
+			const fadeOut = _state.pushNotification(element);
+			update('Creating...', null);
+			fetch(_state.buildPath(_state.config.basePath, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
+				.then((resp) => {
+					if (!resp.ok)
+						return update(`Error: ${resp.statusText}`, false);
+
+					/* add the entry preemtively to the list (ensure that a new list is created) */
+					_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: 0 }]));
+					update('Created!', true);
+					fadeOut();
+				})
+				.catch(() => update('Network error', false));
+			return;
+		}
+
+		console.log('Rename!');
+	};
+	const cleanupRename = () => {
+		if (index == null) {
+			entry.html.row.remove();
+			_state.listFake = null;
+			_state.updateList(null);
+		}
+		else {
+			name.innerText = entry.name;
+			name.contentEditable = false;
+			name.blur();
+		}
+	};
+
+	/* check if the document is not focused, and the rename should just be ignored/silently discarded */
+	if (!document.hasFocus()) {
+		cleanupRename();
+		console.log(`Ignoring renaming of [${entry.name}] as the document is not focused`);
+		return;
+	}
+
+	/* select the entire content of the cell */
+	window.getSelection().removeAllRanges();
+	const range = document.createRange();
+	range.selectNodeContents(name);
+	window.getSelection().addRange(range);
+
+	/* temporarily start editing the single cell */
+	name.contentEditable = true;
+	name.focus();
+	name.onblur = () => {
+		if (checkOperation())
+			confirmRename();
+	}
+
+	/* register the abort handler */
+	name.onkeydown = (e) => {
+		if (e.key != 'Escape' && e.key != 'Enter') return;
+		if (!checkOperation()) return;
+		e.stopPropagation();
+		e.preventDefault();
+		if (e.key == 'Escape')
+			cleanupRename();
+		else
+			confirmRename();
+	};
+}
 _state.uploadFile = (file, fileName, fileSize) => {
 	if (!_state.config.upload) {
 		_state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
@@ -282,8 +414,8 @@ _state.uploadFile = (file, fileName, fileSize) => {
 		if (xhr.status < 200 || xhr.status >= 300)
 			return update(`Error: ${xhr.statusText}`, false);
 
-		/* add the entry preemtively to the list */
-		_state.updateList(_state.list.concat([{ name: fileName, kind: 'file', size: fileSize }]));
+		/* add the entry preemtively to the list (ensure that a new list is created) */
+		_state.updateList(_state.list.concat([{ name: fileName, kind: 'file', size: fileSize, modified: 0 }]));
 		update('Uploaded!', true);
 		fadeOut();
 	};
@@ -307,12 +439,12 @@ _state.removeFile = (name) => {
 		const fadeOut = _state.pushNotification(element);
 		update('Removing...', null);
 
-		fetch(`${_state.config.basePath}/${encodeURIComponent(name)}`, { method: 'DELETE' })
+		fetch(_state.buildPath(_state.config.basePath, encodeURIComponent(name)), { method: 'DELETE' })
 			.then((resp) => {
 				if (!resp.ok)
 					return update(`Error: ${resp.statusText}`, false);
 
-				/* remove the entry preemptively from the list */
+				/* remove the entry preemptively from the list (ensure that a new list is created) */
 				_state.updateList(_state.list.filter((entry) => entry.name != name));
 				update(`Removed!`, true)
 				fadeOut();
@@ -321,19 +453,47 @@ _state.removeFile = (name) => {
 	};
 }
 
-const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-_state.formatSize = (size) => {
-	for (const option of UNIT_PREFIX_LIST) {
-		if (size < option[0] && option[0] > 0)
-			continue;
-		if (option[1] == '')
-			return `${size} Bytes`;
-		size /= option[0];
-		if (size > 1000)
-			return `${Math.round(size)} ${option[1]}B`;
-		else
-			return `${(size).toPrecision(3)} ${option[1]}B`;
-	}
+_state.createListEntry = (parmas) => {
+	const row = document.createElement('div');
+	row.classList.add('row', 'button');
+
+	const entry = document.createElement('a');
+	entry.href = _state.buildPath(_state.config.basePath, parmas.name);
+	entry.classList.add('entry');
+	row.appendChild(entry);
+
+	const icon = document.createElement('div');
+	icon.classList.add('icon');
+	icon.innerText = (parmas.kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
+	entry.appendChild(icon);
+
+	const details = document.createElement('div');
+	details.classList.add('details');
+	entry.appendChild(details);
+
+	const name = document.createElement('div');
+	name.classList.add('name');
+	name.innerText = parmas.name;
+	details.appendChild(name);
+
+	const info = document.createElement('div');
+	info.classList.add('info');
+	details.appendChild(info);
+
+	const size = document.createElement('div');
+	size.innerText = '-';
+	info.appendChild(size);
+
+	const date = document.createElement('div');
+	date.innerText = '-';
+	info.appendChild(date);
+
+	const menu = document.createElement('div');
+	menu.classList.add('button', 'option');
+	menu.appendChild(_state.loadIcon('Menu', 'menu'));
+	row.appendChild(menu);
+
+	return { ...parmas, html: { row, name, size, date, menu } };
 }
 _state.updateList = (content) => {
 	const host = document.getElementById('content');
@@ -344,79 +504,53 @@ _state.updateList = (content) => {
 			return (a.kind == 'directory' ? -1 : 1);
 		return (a.name < b.name ? -1 : (a.name == b.name ? 0 : 1));
 	};
-	content.sort(compare);
+	if (content != null)
+		content.sort(compare);
 
 	/* iterate over the current list and content list, and synchronize them */
 	let prev = 0, next = 0;
-	while (true) {
+	if (content != null) while (true) {
 		const hasPrev = (prev < _state.list.length), hasNext = (next < content.length);
 		if (!hasPrev && !hasNext)
 			break;
 		const cmp = (hasNext ? (hasPrev ? compare(_state.list[prev], content[next]) : 1) : -1);
 
-		/* check if an entry needs to be removed */
+		/* check if an entry needs to be removed (remove from list before removing from tree to ensure 'onblur' can detect the removal) */
 		if (cmp < 0) {
-			host.removeChild(_state.list[prev].html);
-			_state.list.splice(prev, 1);
+			const row = _state.list.splice(prev, 1)[0].html.row;
+			host.removeChild(row);
 			continue;
 		}
 
 		/* check if an entry needs to be added */
+		let entry = null;
 		if (cmp > 0) {
-			const row = document.createElement('div');
-			row.classList.add('row', 'button');
-
-			const entry = document.createElement('a');
-			entry.href = _state.buildPath(_state.config.basePath, content[next].name);
-			entry.classList.add('entry');
-			row.appendChild(entry);
-
-			const icon = document.createElement('div');
-			icon.classList.add('icon');
-			icon.innerText = (content[next].kind == 'directory' ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
-			entry.appendChild(icon);
-
-			const details = document.createElement('div');
-			details.classList.add('details');
-			entry.appendChild(details);
-
-			const name = document.createElement('div');
-			name.classList.add('name');
-			name.innerText = content[next].name;
-			details.appendChild(name);
-
-			const info = document.createElement('div');
-			info.classList.add('info');
-			details.appendChild(info);
-
-			const infoSize = document.createElement('div');
-			infoSize.innerText = 'size';
-			info.appendChild(infoSize);
-
-			const infoDate = document.createElement('div');
-			infoDate.innerText = 'date';
-			info.appendChild(infoDate);
-
-			const menu = document.createElement('div');
-			menu.classList.add('button', 'option');
-			menu.appendChild(_state.loadIcon('Menu', 'menu'));
-			row.appendChild(menu);
-
-			host.insertBefore(row, (hasPrev ? _state.list[prev].html : null));
-			_state.list.splice(prev, 0, { kind: content[next].kind, name: content[next].name, html: row });
+			entry = _state.createListEntry(content[next]);
+			host.insertBefore(entry.html.row, (hasPrev ? _state.list[prev].html.row : null));
+			_state.list.splice(prev, 0, entry);
+		}
+		else {
+			entry = _state.list[prev];
+			entry.size = content[next].size;
+			entry.modified = content[next].modified;
 		}
 
 		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
-		const entry = _state.list[prev], date = new Date(content[next].modified);
 		if (content[next].kind == 'directory')
-			entry.html.children[0].children[1].children[1].children[0].innerText = `${content[next].size} Items`;
+			entry.html.size.innerText = `${content[next].size} Items`;
 		else
-			entry.html.children[0].children[1].children[1].children[0].innerText = `${_state.formatSize(content[next].size)}`;
-		entry.html.children[0].children[1].children[1].children[1].innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
+			entry.html.size.innerText = `${_state.formatSize(content[next].size)}`;
+		if (content[next].modified == 0)
+			entry.html.date.innerText = '-';
+		else {
+			const date = new Date(content[next].modified);
+			entry.html.date.innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
+		}
 
 		/* patch the menu button and right click */
-		entry.html.children[1].onclick = () => _state.showEntryMenu(entry.name);
-		entry.html.oncontextmenu = (e) => {
+		entry.html.menu.onclick = () => _state.showEntryMenu(entry.name);
+		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
+		entry.html.row.oncontextmenu = (e) => {
 			e.preventDefault();
 			_state.showEntryMenu(entry.name);
 		};
@@ -424,8 +558,11 @@ _state.updateList = (content) => {
 	}
 
 	/* check if the list is empty and add the placeholder */
-	document.getElementById('empty-directory').style.display = (_state.list.length == 0 ? 'block' : 'none');
-	console.log('content list has been updated...');
+	if (_state.list.length == 0 && _state.listFake == null)
+		document.getElementById('empty-directory').classList.remove('hidden')
+	else
+		document.getElementById('empty-directory').classList.add('hidden');
+	console.log(`content list has been updated to ${_state.list.length + (_state.listFake != null ? 1 : 0)} entries...`);
 }
 
 window.onload = () => {
@@ -526,7 +663,7 @@ window.onload = () => {
 		/* show and wire up the create button */
 		document.getElementById('create-wrap').classList.remove('hidden');
 		document.getElementById('create-button').onclick = () => _state.showMenu(null, [
-			['Create Directory', () => console.log('Create!')],
+			['Create Directory', () => _state.renameEntry(null)],
 			['Upload Files', () => {
 				const input = document.createElement('input');
 				input.type = 'file', input.multiple = true, input.onchange = () => {

@@ -127,7 +127,7 @@
 	display: flex;
 	justify-content: center;
 	align-items: center;
-	padding: 3px 0.4em;
+	padding: 2px 0.4em;
 }
 
 .content .row+.row {
@@ -161,6 +161,14 @@
 	font-family: monospace;
 	font-size: 1.05em;
 	min-width: max-content;
+	padding: 1px;
+}
+
+.content .row .details .name:focus {
+	outline: none;
+	border: solid 1px #404040;
+	border-radius: 4px;
+	padding: 0px;
 }
 
 .content .row .details .info {
@@ -200,6 +208,10 @@
 	color: #808080;
 	width: 100%;
 	text-align: center;
+}
+
+.content .empty.hidden {
+	display: none;
 }
 
 .modify {
