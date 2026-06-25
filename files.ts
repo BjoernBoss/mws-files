@@ -183,7 +183,7 @@ export class FileShare extends mws.ModuleHandler {
 		const page = new b.HtmlPage({
 			language: 'en',
 			head: [
-				b.Meta('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no'),
+				b.Meta('viewport', 'width=device-width, initial-scale=1'),
 				b.Title(`Directory ${title}`),
 				b.Meta('Description', `Content of directory ${path}`),
 				b.LoadStyle(this.staticPath(client, '/style.css')),

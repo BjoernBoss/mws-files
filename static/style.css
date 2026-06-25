@@ -360,30 +360,46 @@
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-}
-
-.menu .which {
-	font-size: 1.6em;
-	font-family: monospace;
-	padding: 15px 20px;
 	user-select: none;
-	text-align: center;
-	border-bottom: 1px solid #c0c0c0;
-
 }
 
-.menu .which.hidden {
+.menu .caption {
+	padding: 15px 20px;
+	border-bottom: 1px solid #c0c0c0;
+}
+
+.menu .caption.hidden {
 	display: none;
 }
 
-.menu .which .text {
+.menu .caption .path {
+	text-align: center;
+	font-family: monospace;
 	background-color: #ffffff;
 	padding: 4px;
 	border-radius: 5px;
+	font-size: 1.6em;
+}
+
+.menu .caption .text {
+	font-size: 1.4em;
+	width: 2.6em;
+	text-align: right;
+}
+
+.menu .caption .dual {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.menu .caption .dual .row {
+	display: flex;
+	align-items: center;
+	gap: 1em;
 }
 
 .menu .option {
-	user-select: none;
 	background-color: #ffffff;
 	align-items: center;
 	font-size: 1.2em;
@@ -404,24 +420,27 @@
 	height: 100%;
 }
 
-.menu .option.button.delete {
+.menu .option.delete {
 	color: #d04040;
 }
 
+.menu .option.confirm {
+	background-color: unset;
+}
+
 @media (hover: hover)and (pointer: fine) {
-	.option.button.delete:not(.disabled):hover:not(:has(.button:hover)) {
+	.menu .option.delete:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #d04040;
 		color: #e0e0e0;
 	}
 }
 
-.option.button.delete:not(.disabled):active:not(:has(.button:hover)) {
+.menu .option.delete:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #b03030;
 	color: #ffffff;
 }
 
 .menu .abort {
-	user-select: none;
 	display: flex;
 	align-items: center;
 	justify-content: center;

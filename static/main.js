@@ -9,6 +9,7 @@ const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
 const EMOJI_DIRECTORY = '\u{1F4C1}';
 const EMOJI_FILE = '\u{1F4C4}';
+const EMOJI_CHECK = '\u{2705}';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
@@ -33,6 +34,8 @@ _state.loadIcon = (placeholder, name) => {
 			queue: []
 		});
 
+		/* cache the fetches to ensure that failure is logged only once, as every icon
+		*	usage (for example via 'src=...') would otherwise trigger the failure log */
 		fetch(_state.config.icons[name] ?? '/bad_path').then((resp) => {
 			if (!resp.ok)
 				throw 0;
@@ -58,23 +61,16 @@ _state.loadIcon = (placeholder, name) => {
 _state.pushNotification = (body) => {
 	const host = document.getElementById('notifications');
 
-	/* setup the close icon and ensure that failure is logged as few times as
-	*	possible (as every notification would otherwise trigger the failure log) */
-	const close = document.createElement('div');
-	close.classList.add('button');
-	close.appendChild(_state.loadIcon('Close', 'close'));
-
-	const entry = document.createElement('div');
+	const entry = host.appendChild(document.createElement('div'));
 	entry.classList.add('entry');
 
-	const content = document.createElement('div');
+	const content = entry.appendChild(document.createElement('div'));
 	content.classList.add('content');
 	content.appendChild(body);
 
-	entry.appendChild(content);
-	entry.appendChild(close);
-
-	host.appendChild(entry);
+	const close = entry.appendChild(document.createElement('div'));
+	close.classList.add('button');
+	close.appendChild(_state.loadIcon('Close', 'close'));
 
 	/* register the animated close handler and the phase-out handler */
 	let faded = false, closed = false;
@@ -206,48 +202,26 @@ _state.makeStaticText = (text, status) => {
 	return element;
 }
 
-_state.showMenu = (which, entries) => {
-	if (which == null)
-		document.getElementById('menu-which').classList.add('hidden');
-	else {
-		document.getElementById('menu-which').classList.remove('hidden');
-		document.getElementById('menu-text').innerText = which;
-	}
+_state.updateMenuLength = (length) => {
 	const content = document.getElementById('menu-content');
 
-	/* iterate over the entries and add them */
-	let index = 0;
-	for (const entry of entries) {
-		if (index >= content.children.length) {
-			const option = document.createElement('div');
-			option.classList.add('button', 'option');
-			if (entry[0] == 'Delete')
-				option.classList.add('delete');
-			content.appendChild(option);
-
-			const icon = document.createElement('div');
-			icon.classList.add('icon');
-			option.appendChild(icon);
-			if (entry[1] != null)
-				icon.appendChild(_state.loadIcon(entry[0], entry[1]))
-
-			const text = document.createElement('div');
-			text.classList.add('text');
-			option.appendChild(text);
-		}
-
-		content.children[index].children[1].innerText = entry[0];
-		content.children[index].onclick = () => {
-			_state.updateOverlay('menu-overlay', false);
-			entry[2]();
-		}
-		++index;
-	}
-
-	/* remove any remaining entries and show the actual menu */
-	while (index < content.children.length)
+	/* format the list properly and ensure all icons are reset and all classes */
+	while (content.children.length > length)
 		content.lastChild.remove();
-	_state.updateOverlay('menu-overlay', true);
+	for (const child of content.children) {
+		child.children[0].innerText = '';
+		child.classList = 'button option';
+	}
+	while (content.children.length < length) {
+		const option = content.appendChild(document.createElement('div'));
+		option.classList.add('button', 'option');
+
+		const icon = option.appendChild(document.createElement('div'));
+		icon.classList.add('icon');
+
+		const text = option.appendChild(document.createElement('div'));
+		text.classList.add('text');
+	}
 }
 _state.updateOverlay = (name, show) => {
 	const overlay = document.getElementById(name);
@@ -259,18 +233,51 @@ _state.updateOverlay = (name, show) => {
 		/* set the class-style again after finishing the animation, to
 		*	ensure overlayed show/hide's finalize with the proper result */
 		overlay.animate([
-			{ opacity: '0', paddingBottom: '5%', easing: 'ease-in' },
-			{ opacity: '1', paddingBottom: '0' }
+			{ opacity: '0', easing: 'ease-out' }, { opacity: '1' }
 		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.remove('hidden');
+		overlay.children[0].animate([
+			{ transform: 'translateY(-20%)', easing: 'ease-out' }, { transform: 'translateY(0)' }
+		], TRANSITION_OVERLAY_ANIMATION);
 	}
 	else {
 		overlay.animate([
-			{ opacity: '1', paddingBottom: '0', easing: 'ease-out' },
-			{ opacity: '0', paddingBottom: '5%' }
+			{ opacity: '1', easing: 'ease-in' }, { opacity: '0' }
 		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.add('hidden');
+		overlay.children[0].animate([
+			{ transform: 'translateY(0)', easing: 'ease-in' }, { transform: 'translateY(-20%)' }
+		], TRANSITION_OVERLAY_ANIMATION);
 	}
 }
 _state.showEntryMenu = (entry) => {
+	const caption = document.getElementById('menu-caption');
+	caption.classList.remove('hidden');
+
+	/* build the entry caption */
+	const text = document.createElement('div');
+	caption.replaceChildren(text);
+	text.innerText = _state.config.basePath;
+	text.classList.add('path');
+
+	/* initialize the menu list size */
+	const content = document.getElementById('menu-content');
+	_state.updateMenuLength(7);
+
+	/* update the texts and icons */
+	content.children[0].children[0].appendChild(_state.loadIcon('Download', 'download'));
+	content.children[0].children[1].innerText = 'Download';
+	content.children[1].children[1].innerText = 'Rename';
+	content.children[2].children[1].innerText = 'Copy to...';
+	content.children[3].children[1].innerText = 'Move to...';
+	content.children[4].children[1].innerText = 'Open';
+	content.children[5].children[1].innerText = 'Copy URL';
+	content.children[6].children[0].appendChild(_state.loadIcon('Delete', 'delete'));
+	content.children[6].children[1].innerText = 'delete';
+	content.children[6].classList.add('delete');
+
+	/* show the actual menu */
+	_state.updateOverlay('menu-overlay', true);
+
+	/* wire up the corresponding click logic */
 	const resolveIndex = () => {
 		const index = _state.list.indexOf(entry);
 		if (index >= 0)
@@ -278,51 +285,98 @@ _state.showEntryMenu = (entry) => {
 		_state.pushNotification(_state.makeStaticText(`[${entry.name}] does not exist anymore`, false));
 		return null;
 	};
+	content.children[1].onclick = () => {
+		const index = resolveIndex();
+		if (index != null)
+			_state.renameEntry(index);
+	};
+	content.children[2].onclick = () => _state.showMoveCopyMenu(entry, false);
+	content.children[3].onclick = () => _state.showMoveCopyMenu(entry, true);
+}
+_state.showMoveCopyMenu = (entry, move) => {
+	if (!_state.config.upload)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+	const caption = document.getElementById('menu-caption');
+	caption.classList.remove('hidden');
 
-	_state.showMenu(_state.appendToPath(_state.config.basePath, entry.name), [
-		['Download', 'download', () => { }],
-		['Rename', null, () => {
-			const index = resolveIndex();
-			if (index != null)
-				_state.renameEntry(index);
-		}],
-		['Copy to...', null, () => { }],
-		['Move to...', null, () => { }],
-		['Open', null, () => { }],
-		['Copy URL', null, () => { }],
-		['Delete', 'delete', () => { }]
-	]);
+	/* build the menu caption */
+	const dual = document.createElement('div');
+	dual.classList.add('dual');
+	caption.replaceChildren(dual);
+	const row0 = dual.appendChild(document.createElement('div'));
+	row0.classList.add('row');
+	const row1 = dual.appendChild(document.createElement('div'));
+	row1.classList.add('row');
+
+	const text0 = row0.appendChild(document.createElement('div'));
+	text0.innerText = (move ? 'Move' : 'Copy');
+	text0.classList.add('text');
+
+	const path0 = row0.appendChild(document.createElement('div'));
+	path0.innerText = _state.appendToPath(_state.config.basePath, entry.name);
+	path0.classList.add('path');
+
+	const text1 = row1.appendChild(document.createElement('div'));
+	text1.innerText = 'to';
+	text1.classList.add('text');
+
+	const path1 = row1.appendChild(document.createElement('div'));
+	path1.classList.add('path');
+
+	/* construct the map of already fetched directories (cache them) */
+	const fetched = { [_state.config.basePath]: [] };
+	for (const entry of _state.list) {
+		if (entry.kind == 'directory')
+			fetched[_state.config.basePath].push(entry.name);
+	}
+
+	/* helper to setup the list */
+	const content = document.getElementById('menu-content');
+	const setupList = (path) => {
+		const directories = fetched[path];
+		_state.updateMenuLength(directories.length + (path == '/' ? 1 : 2));
+		path1.innerText = path;
+
+		let index = 0;
+		if (path != '/') {
+			content.children[0].children[0].appendChild(_state.loadIcon('Back', 'back'));
+			content.children[0].children[1].innerText = '..';
+			++index;
+		}
+
+		for (let i = 0; i < directories.length; ++i) {
+			content.children[i + index].children[0].innerText = EMOJI_DIRECTORY;
+			content.children[i + index].children[1].innerText = directories[i];
+		}
+		index += directories.length;
+
+		content.children[index].children[0].innerText = EMOJI_CHECK;
+		content.children[index].children[1].innerText = (move ? 'Move Here' : 'Copy Here');
+		content.children[index].classList.add('confirm');
+		if (move && path == _state.config.basePath)
+			content.children[index].classList.add('disabled');
+	};
+
+	/* construct the initial list and show the actual menu */
+	setupList(_state.config.basePath);
+	_state.updateOverlay('menu-overlay', true);
 }
 _state.showCreateMenu = () => {
-	document.getElementById('menu-which').classList.add('hidden');
+	if (!_state.config.upload)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+	document.getElementById('menu-caption').classList.add('hidden');
+
+	/* initialize the menu list size */
 	const content = document.getElementById('menu-content');
-
-	/* format the list properly */
-	while (content.children.length > 3)
-		content.lastChild.remove();
-	for (const child of content.children)
-		child.children[0].innerText = '';
-	while (content.children.length < 3) {
-		const option = document.createElement('div');
-		option.classList.add('button', 'option');
-		content.appendChild(option);
-
-		const icon = document.createElement('div');
-		icon.classList.add('icon');
-		option.appendChild(icon);
-
-		const text = document.createElement('div');
-		text.classList.add('text');
-		option.appendChild(text);
-	}
+	_state.updateMenuLength(3);
 
 	/* update the texts and icons */
 	content.children[0].children[0].innerText = EMOJI_DIRECTORY;
-	content.children[0].children[1].innerText = 'Create Directory'
-	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'))
-	content.children[1].children[1].innerText = 'Upload Files'
-	content.children[2].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'))
-	content.children[2].children[1].innerText = 'Upload Directory'
+	content.children[0].children[1].innerText = 'Create Directory';
+	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
+	content.children[1].children[1].innerText = 'Upload Files';
+	content.children[2].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
+	content.children[2].children[1].innerText = 'Upload Directory';
 
 	/* show the actual menu */
 	_state.updateOverlay('menu-overlay', true);
@@ -464,10 +518,8 @@ _state.renameEntry = (index) => {
 	};
 }
 _state.uploadFile = (file, fileName, fileSize) => {
-	if (!_state.config.upload) {
-		_state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
-		return;
-	}
+	if (!_state.config.upload)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
 	console.log(`uploading [${fileName}] of size [${fileSize}]...`);
 
 	const [element, update] = _state.makeUploadProgress(`Upload: ${fileName}`);
@@ -494,10 +546,8 @@ _state.uploadFile = (file, fileName, fileSize) => {
 	xhr.send(file);
 }
 _state.removeFile = (name) => {
-	if (!_state.config.delete) {
-		_state.pushNotification(_state.makeStaticText('Not allowed to remove content', false));
-		return;
-	}
+	if (!_state.config.delete)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to remove content', false));
 	console.log(`confirming removing [${name}]...`);
 	document.getElementById('remove-name').innerText = name;
 	_state.updateOverlay('remove-overlay', true);
@@ -528,41 +578,33 @@ _state.createListEntry = (parmas) => {
 	const row = document.createElement('div');
 	row.classList.add('row', 'button');
 
-	const entry = document.createElement('a');
+	const entry = row.appendChild(document.createElement('a'));
 	entry.href = _state.buildPath(true, parmas.name);
 	entry.classList.add('entry');
-	row.appendChild(entry);
 
-	const icon = document.createElement('div');
+	const icon = entry.appendChild(document.createElement('div'));
 	icon.classList.add('icon');
 	icon.innerText = (parmas.kind == 'directory' ? EMOJI_DIRECTORY : EMOJI_FILE);
-	entry.appendChild(icon);
 
-	const details = document.createElement('div');
+	const details = entry.appendChild(document.createElement('div'));
 	details.classList.add('details');
-	entry.appendChild(details);
 
-	const name = document.createElement('div');
+	const name = details.appendChild(document.createElement('div'));
 	name.classList.add('name');
 	name.innerText = parmas.name;
-	details.appendChild(name);
 
-	const info = document.createElement('div');
+	const info = details.appendChild(document.createElement('div'));
 	info.classList.add('info');
-	details.appendChild(info);
 
-	const size = document.createElement('div');
+	const size = info.appendChild(document.createElement('div'));
 	size.innerText = '-';
-	info.appendChild(size);
 
-	const date = document.createElement('div');
+	const date = info.appendChild(document.createElement('div'));
 	date.innerText = '-';
-	info.appendChild(date);
 
-	const menu = document.createElement('div');
+	const menu = row.appendChild(document.createElement('div'));
 	menu.classList.add('button', 'option');
 	menu.appendChild(_state.loadIcon('Menu', 'menu'));
-	row.appendChild(menu);
 
 	return { ...parmas, html: { row, name, size, date, menu } };
 }
@@ -667,17 +709,15 @@ window.onload = () => {
 				end = basePath.length;
 
 			if (i > 1) {
-				const separator = document.createElement('div');
+				const separator = location.appendChild(document.createElement('div'));
 				separator.classList.add('separator');
 				separator.innerText = '/';
-				location.appendChild(separator);
 			}
 
-			const entry = document.createElement('a');
+			const entry = location.appendChild(document.createElement('a'));
 			entry.href = _state.buildPath(false, basePath.substring(0, end));
 			entry.classList.add('component', 'button');
 			entry.innerText = basePath.substring(i, end);
-			location.appendChild(entry);
 		}
 	}
 
