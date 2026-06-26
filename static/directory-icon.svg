@@ -4,10 +4,10 @@
 	<defs>
 		<linearGradient id="dir0" x1="0" y1="4" x2="0" y2="9" gradientUnits="userSpaceOnUse">
 			<stop offset="0%" stop-color="#ffc060" />
-			<stop offset="100%" stop-color="#e89a18" />
+			<stop offset="100%" stop-color="#e89818" />
 		</linearGradient>
 		<linearGradient id="dir1" x1="0" y1="9" x2="0" y2="20" gradientUnits="userSpaceOnUse">
-			<stop offset="0%" stop-color="#ffd18a" />
+			<stop offset="0%" stop-color="#ffd088" />
 			<stop offset="100%" stop-color="#ffa810" />
 		</linearGradient>
 	</defs>

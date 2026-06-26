@@ -255,7 +255,7 @@ _state.showEntryMenu = (entry) => {
 	/* build the entry caption */
 	const text = document.createElement('div');
 	caption.replaceChildren(text);
-	text.innerText = _state.config.basePath;
+	text.innerText = _state.appendToPath(_state.config.basePath, entry.name);
 	text.classList.add('path');
 
 	/* initialize the menu list size */
@@ -271,7 +271,7 @@ _state.showEntryMenu = (entry) => {
 	content.children[4].children[1].innerText = 'Open';
 	content.children[5].children[1].innerText = 'Copy URL';
 	content.children[6].children[0].appendChild(_state.loadIcon('Delete', 'delete'));
-	content.children[6].children[1].innerText = 'delete';
+	content.children[6].children[1].innerText = 'Delete';
 	content.children[6].classList.add('delete');
 
 	/* show the actual menu */
@@ -588,7 +588,7 @@ _state.createListEntry = (parmas) => {
 	if (parmas.kind == 'directory')
 		icon.appendChild(_state.loadIcon('Directory', 'directory'))
 	else
-		icon.innerText = EMOJI_FILE;
+		icon.appendChild(_state.loadIcon('File', 'file'))
 
 	const details = entry.appendChild(document.createElement('div'));
 	details.classList.add('details');

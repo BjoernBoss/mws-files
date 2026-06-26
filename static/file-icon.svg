@@ -1,0 +1,24 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+	<defs>
+		<linearGradient id="file0" x1="10" y1="2" x2="0" y2="21" gradientUnits="userSpaceOnUse">
+			<stop offset="0%" stop-color="#e0e6ff" />
+			<stop offset="100%" stop-color="#c7d6ff" />
+		</linearGradient>
+		<linearGradient id="file1" x1="16.85" y1="5.15" x2="14.3" y2="7.7" gradientUnits="userSpaceOnUse">
+			<stop offset="0%" stop-color="#bfc0cc" />
+			<stop offset="60%" stop-color="#dcdcdc" />
+			<stop offset="100%" stop-color="#b0b8bf" />
+		</linearGradient>
+	</defs>
+
+	<path d="M14 3L5 3V21H19V8Z" fill="url(#file0)" stroke="url(#file0)" stroke-width="1px" stroke-linejoin="round" />
+	<path d="M14.15 2.8V6.85Q14.15 7.85 15.15 7.85L19.2 7.85" fill="none" stroke="#8c98b0" stroke-width="0.5px" stroke-linecap="round" />
+	<path d="M14.3 2.6V6.7Q14.3 7.7 15.3 7.7H19.4" fill="url(#file1)" stroke-width="0px" />
+
+	<path d="M7.5 10.25H16.5" stroke="#808898" stroke-width="0.75px" stroke-linecap="round" />
+	<path d="M7.5 12.25H16.5" stroke="#808898" stroke-width="0.75px" stroke-linecap="round" />
+	<path d="M7.5 14.25H16.5" stroke="#808898" stroke-width="0.75px" stroke-linecap="round" />
+	<path d="M7.5 16.25H12" stroke="#808898" stroke-width="0.75px" stroke-linecap="round" />
+</svg>
