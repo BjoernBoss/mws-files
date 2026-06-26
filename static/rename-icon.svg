@@ -1,0 +1,33 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+	<path d="
+	M 4 10.5
+	V 13.5
+	Q 4 15.5 6 15.5
+	H 18
+	Q 20 15.5 20 13.5
+	V 10.5
+	Q 20 8.5 18 8.5
+	H 6
+	Q 4 8.5 4 10.5
+	" stroke="currentColor" stroke-width="2px" />
+
+	<path d="
+	M 14 5
+	V 19
+	" stroke="currentColor" stroke-width="2px" />
+
+	<path d="
+	M 11 4
+	H 12
+	Q 14 4 14 6
+	Q 14 4 16 4
+	H 17
+	M 11 20
+	H 12
+	Q 14 20 14 18
+	Q 14 20 16 20
+	H 17
+	" stroke="currentColor" stroke-width="1.75px" stroke-linecap="round" />
+</svg>

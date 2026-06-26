@@ -228,6 +228,7 @@ _state.showEntryMenu = (entry) => {
 	/* update the texts and icons */
 	content.children[0].children[0].appendChild(_state.loadIcon('Download', 'download'));
 	content.children[0].children[1].innerText = 'Download';
+	content.children[1].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
 	content.children[1].children[1].innerText = 'Rename';
 	content.children[2].children[1].innerText = 'Copy to...';
 	content.children[3].children[1].innerText = 'Move to...';
