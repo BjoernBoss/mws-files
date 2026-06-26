@@ -1,0 +1,17 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+	<defs>
+		<linearGradient id="dir0" x1="0" y1="4" x2="0" y2="9" gradientUnits="userSpaceOnUse">
+			<stop offset="0%" stop-color="#ffc060" />
+			<stop offset="100%" stop-color="#e89a18" />
+		</linearGradient>
+		<linearGradient id="dir1" x1="0" y1="9" x2="0" y2="20" gradientUnits="userSpaceOnUse">
+			<stop offset="0%" stop-color="#ffd18a" />
+			<stop offset="100%" stop-color="#ffa810" />
+		</linearGradient>
+	</defs>
+
+	<path d="M3 9V4H8L11 6.5H21V9" fill="url(#dir0)" stroke="url(#dir0)" stroke-width="3px" stroke-linejoin="round" />
+	<path d="M3 9V20H21V9Z" fill="url(#dir1)" stroke="url(#dir1)" stroke-width="3px" stroke-linejoin="round" />
+</svg>

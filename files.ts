@@ -169,6 +169,8 @@ export class FileShare extends mws.ModuleHandler {
 				create: this.staticPath(client, '/create-icon.svg'),
 				delete: this.staticPath(client, '/delete-icon.svg'),
 				download: this.staticPath(client, '/download-icon.svg'),
+				directory: this.staticPath(client, '/directory-icon.svg'),
+				file: this.staticPath(client, '/file-icon.svg'),
 				upload: this.staticPath(client, '/upload-icon.svg'),
 				home: this.staticPath(client, '/home-icon.svg'),
 				menu: this.staticPath(client, '/menu-icon.svg')

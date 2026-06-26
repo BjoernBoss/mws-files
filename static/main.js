@@ -1,15 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 Bjoern Boss Henrichsen */
 
-const REMOVE_NOTIFICATION_ANIMATION = 25;
+const REMOVE_NOTIFICATION_ANIMATION = 35;
 const FADE_NOTIFICATION_ANIMATION = 3500;
 const TRANSITION_OVERLAY_ANIMATION = 40;
 const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
-const EMOJI_DIRECTORY = '\u{1F4C1}';
 const EMOJI_FILE = '\u{1F4C4}';
-const EMOJI_CHECK = '\u{2705}';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
@@ -79,8 +77,8 @@ _state.pushNotification = (body) => {
 
 		/* manually animate, due to unknown initial height */
 		entry.animate([
-			{ height: `${entry.clientHeight}px`, easing: 'ease-in' },
-			{ height: '0', paddingTop: '0', paddingBottom: '0' }
+			{ height: `${entry.clientHeight}px`, minHeight: `${entry.clientHeight}px`, easing: 'ease-in' },
+			{ height: '0', paddingTop: '0', paddingBottom: '0', minHeight: '0', marginTop: '-0.5em' }
 		], { duration: REMOVE_NOTIFICATION_ANIMATION, fill: 'forwards' })
 			.onfinish = () => host.removeChild(entry);
 	};
@@ -205,11 +203,12 @@ _state.makeStaticText = (text, status) => {
 _state.updateMenuLength = (length) => {
 	const content = document.getElementById('menu-content');
 
-	/* format the list properly and ensure all icons are reset and all classes */
+	/* format the list properly and ensure all existing elements are properly reset */
 	while (content.children.length > length)
 		content.lastChild.remove();
 	for (const child of content.children) {
 		child.children[0].innerText = '';
+		child.children[1].classList = 'text';
 		child.classList = 'button option';
 	}
 	while (content.children.length < length) {
@@ -251,6 +250,7 @@ _state.updateOverlay = (name, show) => {
 _state.showEntryMenu = (entry) => {
 	const caption = document.getElementById('menu-caption');
 	caption.classList.remove('hidden');
+	document.getElementById('menu-confirm').classList.add('hidden');
 
 	/* build the entry caption */
 	const text = document.createElement('div');
@@ -296,8 +296,13 @@ _state.showEntryMenu = (entry) => {
 _state.showMoveCopyMenu = (entry, move) => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+
+	/* show the menu and the confirm button */
 	const caption = document.getElementById('menu-caption');
 	caption.classList.remove('hidden');
+	const confirm = document.getElementById('menu-confirm');
+	confirm.classList.remove('hidden');
+	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
 
 	/* build the menu caption */
 	const dual = document.createElement('div');
@@ -334,27 +339,22 @@ _state.showMoveCopyMenu = (entry, move) => {
 	const content = document.getElementById('menu-content');
 	const setupList = (path) => {
 		const directories = fetched[path];
-		_state.updateMenuLength(directories.length + (path == '/' ? 1 : 2));
+		_state.updateMenuLength(directories.length + (path == '/' ? 0 : 1));
 		path1.innerText = path;
 
 		let index = 0;
 		if (path != '/') {
 			content.children[0].children[0].appendChild(_state.loadIcon('Back', 'back'));
+			content.children[0].children[1].classList.add('path');
 			content.children[0].children[1].innerText = '..';
 			++index;
 		}
 
 		for (let i = 0; i < directories.length; ++i) {
-			content.children[i + index].children[0].innerText = EMOJI_DIRECTORY;
+			content.children[i + index].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
+			content.children[i + index].children[1].classList.add('path');
 			content.children[i + index].children[1].innerText = directories[i];
 		}
-		index += directories.length;
-
-		content.children[index].children[0].innerText = EMOJI_CHECK;
-		content.children[index].children[1].innerText = (move ? 'Move Here' : 'Copy Here');
-		content.children[index].classList.add('confirm');
-		if (move && path == _state.config.basePath)
-			content.children[index].classList.add('disabled');
 	};
 
 	/* construct the initial list and show the actual menu */
@@ -365,13 +365,14 @@ _state.showCreateMenu = () => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
 	document.getElementById('menu-caption').classList.add('hidden');
+	document.getElementById('menu-confirm').classList.add('hidden');
 
 	/* initialize the menu list size */
 	const content = document.getElementById('menu-content');
 	_state.updateMenuLength(3);
 
 	/* update the texts and icons */
-	content.children[0].children[0].innerText = EMOJI_DIRECTORY;
+	content.children[0].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
 	content.children[0].children[1].innerText = 'Create Directory';
 	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
 	content.children[1].children[1].innerText = 'Upload Files';
@@ -584,7 +585,10 @@ _state.createListEntry = (parmas) => {
 
 	const icon = entry.appendChild(document.createElement('div'));
 	icon.classList.add('icon');
-	icon.innerText = (parmas.kind == 'directory' ? EMOJI_DIRECTORY : EMOJI_FILE);
+	if (parmas.kind == 'directory')
+		icon.appendChild(_state.loadIcon('Directory', 'directory'))
+	else
+		icon.innerText = EMOJI_FILE;
 
 	const details = entry.appendChild(document.createElement('div'));
 	details.classList.add('details');
