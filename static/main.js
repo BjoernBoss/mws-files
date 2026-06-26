@@ -7,15 +7,22 @@ const TRANSITION_OVERLAY_ANIMATION = 40;
 const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
-const EMOJI_FILE = '\u{1F4C4}';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
 
+function buildElement(options) {
+	const e = document.createElement(options?.kind ?? 'div');
+	if (options?.class != null)
+		e.classList = options.class;
+	if (options?.text != null)
+		e.innerText = options.text;
+	return e;
+}
+
 _state.loadIcon = (placeholder, name) => {
 	/* load the icons manually to ensure they are placed in-place and can be CSS modified */
-	const element = document.createElement('div');
-	element.classList.add('load-icon');
+	const element = buildElement({ class: 'load-icon' });
 
 	let entry = _state.loadedIcons[name] ?? null;
 
@@ -59,15 +66,12 @@ _state.loadIcon = (placeholder, name) => {
 _state.pushNotification = (body) => {
 	const host = document.getElementById('notifications');
 
-	const entry = host.appendChild(document.createElement('div'));
-	entry.classList.add('entry');
+	const entry = host.appendChild(buildElement({ class: 'entry' }));
 
-	const content = entry.appendChild(document.createElement('div'));
-	content.classList.add('content');
+	const content = entry.appendChild(buildElement({ class: 'content' }));
 	content.appendChild(body);
 
-	const close = entry.appendChild(document.createElement('div'));
-	close.classList.add('button');
+	const close = entry.appendChild(buildElement({ class: 'button' }));
 	close.appendChild(_state.loadIcon('Close', 'close'));
 
 	/* register the animated close handler and the phase-out handler */
@@ -126,31 +130,13 @@ _state.formatSize = (size) => {
 	}
 }
 _state.makeUploadProgress = (caption) => {
-	const upload = document.createElement('div');
-	upload.classList.add('upload');
+	const upload = buildElement({ class: 'upload' });
+	upload.appendChild(buildElement({ class: 'text', text: caption }));
+	const htmlStatus = upload.appendChild(buildElement({ class: 'status' }));
 
-	const name = document.createElement('div');
-	name.innerText = caption;
-	name.classList.add('text');
-
-	const htmlStatus = document.createElement('div');
-	htmlStatus.classList.add('status');
-
-	upload.appendChild(name);
-	upload.appendChild(htmlStatus);
-
-	const bar = document.createElement('div');
-	bar.classList.add('bar');
-	const fill = document.createElement('div');
-	fill.classList.add('fill');
-	bar.appendChild(fill);
-
-	const textProgress = document.createElement('div');
-	textProgress.classList.add('progress', 'state');
-	textProgress.innerText = '0%';
-
-	htmlStatus.appendChild(bar);
-	htmlStatus.appendChild(textProgress);
+	const bar = htmlStatus.appendChild(buildElement({ class: 'bar' }));
+	const fill = bar.appendChild(buildElement({ class: 'fill' }));
+	const textProgress = htmlStatus.appendChild(buildElement({ class: 'progress state', text: '0%' }));
 
 	/* setup the callback to report progress and success/failure */
 	const callback = (detail, status) => {
@@ -161,7 +147,7 @@ _state.makeUploadProgress = (caption) => {
 			return;
 		}
 
-		htmlStatus.removeChild(bar)
+		htmlStatus.removeChild(bar);
 		textProgress.classList.remove('progress');
 		textProgress.classList.add('text');
 		textProgress.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
@@ -170,19 +156,9 @@ _state.makeUploadProgress = (caption) => {
 	return [upload, callback];
 }
 _state.makeDelayedStatus = (caption) => {
-	const upload = document.createElement('div');
-	upload.classList.add('upload');
-
-	const name = document.createElement('div');
-	name.innerText = caption;
-	name.classList.add('text');
-
-	const textStatus = document.createElement('div');
-	textStatus.innerText = '...';
-	textStatus.classList.add('text', 'state');
-
-	upload.appendChild(name);
-	upload.appendChild(textStatus);
+	const upload = buildElement({ class: 'upload' });
+	const name = upload.appendChild(buildElement({ class: 'text', text: caption }));
+	const textStatus = upload.appendChild(buildElement({ class: 'text state', text: '...' }));
 
 	/* setup the callback to report progress and success/failure */
 	const callback = (detail, status) => {
@@ -193,8 +169,7 @@ _state.makeDelayedStatus = (caption) => {
 	return [upload, callback];
 }
 _state.makeStaticText = (text, status) => {
-	const element = document.createElement('div');
-	element.innerText = text;
+	const element = buildElement({ text });
 	if (status != null)
 		element.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
 	return element;
@@ -212,14 +187,9 @@ _state.updateMenuLength = (length) => {
 		child.classList = 'button option';
 	}
 	while (content.children.length < length) {
-		const option = content.appendChild(document.createElement('div'));
-		option.classList.add('button', 'option');
-
-		const icon = option.appendChild(document.createElement('div'));
-		icon.classList.add('icon');
-
-		const text = option.appendChild(document.createElement('div'));
-		text.classList.add('text');
+		const option = content.appendChild(buildElement({ class: 'button option' }));
+		option.appendChild(buildElement({ class: 'icon' }));
+		option.appendChild(buildElement({ class: 'text' }));
 	}
 }
 _state.updateOverlay = (name, show) => {
@@ -248,15 +218,8 @@ _state.updateOverlay = (name, show) => {
 	}
 }
 _state.showEntryMenu = (entry) => {
-	const caption = document.getElementById('menu-caption');
-	caption.classList.remove('hidden');
+	document.getElementById('menu-caption').classList.add('hidden');
 	document.getElementById('menu-confirm').classList.add('hidden');
-
-	/* build the entry caption */
-	const text = document.createElement('div');
-	caption.replaceChildren(text);
-	text.innerText = _state.appendToPath(_state.config.basePath, entry.name);
-	text.classList.add('path');
 
 	/* initialize the menu list size */
 	const content = document.getElementById('menu-content');
@@ -286,6 +249,7 @@ _state.showEntryMenu = (entry) => {
 		return null;
 	};
 	content.children[1].onclick = () => {
+		_state.updateOverlay('menu-overlay', false);
 		const index = resolveIndex();
 		if (index != null)
 			_state.renameEntry(index);
@@ -305,28 +269,14 @@ _state.showMoveCopyMenu = (entry, move) => {
 	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
 
 	/* build the menu caption */
-	const dual = document.createElement('div');
-	dual.classList.add('dual');
+	const dual = buildElement({ class: 'dual' });
 	caption.replaceChildren(dual);
-	const row0 = dual.appendChild(document.createElement('div'));
-	row0.classList.add('row');
-	const row1 = dual.appendChild(document.createElement('div'));
-	row1.classList.add('row');
-
-	const text0 = row0.appendChild(document.createElement('div'));
-	text0.innerText = (move ? 'Move' : 'Copy');
-	text0.classList.add('text');
-
-	const path0 = row0.appendChild(document.createElement('div'));
-	path0.innerText = _state.appendToPath(_state.config.basePath, entry.name);
-	path0.classList.add('path');
-
-	const text1 = row1.appendChild(document.createElement('div'));
-	text1.innerText = 'to';
-	text1.classList.add('text');
-
-	const path1 = row1.appendChild(document.createElement('div'));
-	path1.classList.add('path');
+	const row0 = dual.appendChild(buildElement({ class: 'row' }));
+	const row1 = dual.appendChild(buildElement({ class: 'row' }));
+	row0.appendChild(buildElement({ class: 'text', text: (move ? 'Move' : 'Copy') }));
+	row0.appendChild(buildElement({ class: 'path', text: _state.appendToPath(_state.config.basePath, entry.name) }));
+	row1.appendChild(buildElement({ class: 'text', text: 'to' }));
+	const uiPath = row1.appendChild(buildElement({ class: 'path' }));
 
 	/* construct the map of already fetched directories (cache them) */
 	const fetched = { [_state.config.basePath]: [] };
@@ -340,7 +290,7 @@ _state.showMoveCopyMenu = (entry, move) => {
 	const setupList = (path) => {
 		const directories = fetched[path];
 		_state.updateMenuLength(directories.length + (path == '/' ? 0 : 1));
-		path1.innerText = path;
+		uiPath.innerText = path;
 
 		let index = 0;
 		if (path != '/') {
@@ -575,42 +525,28 @@ _state.removeFile = (name) => {
 	};
 }
 
-_state.createListEntry = (parmas) => {
-	const row = document.createElement('div');
-	row.classList.add('row', 'button');
+_state.createListEntry = (params) => {
+	const row = buildElement({ class: 'row button' });
 
-	const entry = row.appendChild(document.createElement('a'));
-	entry.href = _state.buildPath(true, parmas.name);
-	entry.classList.add('entry');
+	const entry = row.appendChild(buildElement({ kind: 'a', class: 'entry' }));
+	entry.href = _state.buildPath(true, params.name);
 
-	const icon = entry.appendChild(document.createElement('div'));
-	icon.classList.add('icon');
-	if (parmas.kind == 'directory')
+	const icon = entry.appendChild(buildElement({ class: 'icon' }));
+	if (params.kind == 'directory')
 		icon.appendChild(_state.loadIcon('Directory', 'directory'))
 	else
 		icon.appendChild(_state.loadIcon('File', 'file'))
 
-	const details = entry.appendChild(document.createElement('div'));
-	details.classList.add('details');
+	const details = entry.appendChild(buildElement({ class: 'details' }));
+	const name = details.appendChild(buildElement({ class: 'name', text: params.name }));
+	const info = details.appendChild(buildElement({ class: 'info' }));
+	const size = info.appendChild(buildElement({ text: '-' }));
+	const date = info.appendChild(buildElement({ text: '-' }));
 
-	const name = details.appendChild(document.createElement('div'));
-	name.classList.add('name');
-	name.innerText = parmas.name;
-
-	const info = details.appendChild(document.createElement('div'));
-	info.classList.add('info');
-
-	const size = info.appendChild(document.createElement('div'));
-	size.innerText = '-';
-
-	const date = info.appendChild(document.createElement('div'));
-	date.innerText = '-';
-
-	const menu = row.appendChild(document.createElement('div'));
-	menu.classList.add('button', 'option');
+	const menu = row.appendChild(buildElement({ class: 'button option' }));
 	menu.appendChild(_state.loadIcon('Menu', 'menu'));
 
-	return { ...parmas, html: { row, name, size, date, menu } };
+	return { ...params, html: { row, name, size, date, menu } };
 }
 _state.updateList = (content) => {
 	const host = document.getElementById('content');
@@ -712,16 +648,10 @@ window.onload = () => {
 			if (end < 0)
 				end = basePath.length;
 
-			if (i > 1) {
-				const separator = location.appendChild(document.createElement('div'));
-				separator.classList.add('separator');
-				separator.innerText = '/';
-			}
-
-			const entry = location.appendChild(document.createElement('a'));
+			if (i > 1)
+				location.appendChild(buildElement({ class: 'separator', text: '/' }));
+			const entry = location.appendChild(buildElement({ kind: 'a', class: 'component button', text: basePath.substring(i, end) }));
 			entry.href = _state.buildPath(false, basePath.substring(0, end));
-			entry.classList.add('component', 'button');
-			entry.innerText = basePath.substring(i, end);
 		}
 	}
 
