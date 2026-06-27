@@ -17,6 +17,8 @@ function buildElement(options) {
 		e.classList = options.class;
 	if (options?.text != null)
 		e.innerText = options.text;
+	else if (options?.child != null)
+		e.appendChild(options.child);
 	return e;
 }
 
@@ -68,11 +70,8 @@ _state.pushNotification = (body) => {
 
 	const entry = host.appendChild(buildElement({ class: 'entry' }));
 
-	const content = entry.appendChild(buildElement({ class: 'content' }));
-	content.appendChild(body);
-
-	const close = entry.appendChild(buildElement({ class: 'button' }));
-	close.appendChild(_state.loadIcon('Close', 'close'));
+	entry.appendChild(buildElement({ class: 'body', child: body }));
+	const close = entry.appendChild(buildElement({ class: 'button', child: _state.loadIcon('Close', 'close') }));
 
 	/* register the animated close handler and the phase-out handler */
 	let faded = false, closed = false;
@@ -174,6 +173,53 @@ _state.makeStaticText = (text, status) => {
 		element.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
 	return element;
 }
+_state.makeLocation = (path, cb) => {
+	const kind = (cb == null ? 'a' : 'div');
+	const location = buildElement({ class: 'wrapper location' });
+
+	/* add the home button */
+	const home = location.appendChild(buildElement({ kind, class: 'button' }));
+	home.appendChild(buildElement({ class: 'icon', child: _state.loadIcon('Home', 'home') }));
+
+	/* update the logic for home */
+	if (cb == null)
+		home.href = _state.buildPath(false);
+	else if (path == '/')
+		home.classList.add('disabled');
+	else
+		home.onclick = () => cb('/');
+
+	/* add the buttons for the path components */
+	for (let i = 1, end = 0; i < path.length; i = end + 1) {
+		end = path.indexOf('/', i);
+		if (end < 0)
+			end = path.length;
+
+		location.appendChild(buildElement({ class: 'separator', text: '>' }));
+		const entry = location.appendChild(buildElement({ kind, class: 'button', text: path.substring(i, end) }));
+
+		/* wire up the button logic */
+		if (cb == null)
+			entry.href = _state.buildPath(false, path.substring(0, end));
+		else if (end < path.length)
+			entry.onclick = () => cb(path.substring(0, end));
+		else
+			entry.classList.add('disabled');
+	}
+
+	/* register the location listener to ensure the location is scroll end-favoring
+	*	(to preserve the closer parents on small views; initialize for initial load) */
+	let lastWidth = location.clientWidth;
+	location.scrollLeft = location.scrollWidth - lastWidth;
+	new ResizeObserver(() => {
+		const width = location.clientWidth;
+		if (width < lastWidth && location.scrollLeft + lastWidth >= location.scrollWidth)
+			location.scrollLeft = location.scrollWidth - width;
+		lastWidth = width;
+	}).observe(location);
+
+	return location;
+}
 
 _state.updateMenuLength = (length) => {
 	const content = document.getElementById('menu-content');
@@ -218,7 +264,7 @@ _state.updateOverlay = (name, show) => {
 	}
 }
 _state.showEntryMenu = (entry) => {
-	document.getElementById('menu-caption').classList.add('hidden');
+	document.getElementById('menu-navigation').classList.add('hidden');
 	document.getElementById('menu-confirm').classList.add('hidden');
 
 	/* initialize the menu list size */
@@ -262,60 +308,83 @@ _state.showMoveCopyMenu = (entry, move) => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
 
-	/* show the menu and the confirm button */
-	const caption = document.getElementById('menu-caption');
-	caption.classList.remove('hidden');
+	/* show the menu navigation and configure the confirm button */
+	const navigation = document.getElementById('menu-navigation');
 	const confirm = document.getElementById('menu-confirm');
+	const content = document.getElementById('menu-content');
+	navigation.classList.remove('hidden');
 	confirm.classList.remove('hidden');
 	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
 
-	/* build the menu caption */
-	const dual = buildElement({ class: 'dual' });
-	caption.replaceChildren(dual);
-	const row0 = dual.appendChild(buildElement({ class: 'row' }));
-	const row1 = dual.appendChild(buildElement({ class: 'row' }));
-	row0.appendChild(buildElement({ class: 'text', text: (move ? 'Move' : 'Copy') }));
-	row0.appendChild(buildElement({ class: 'path', text: _state.appendToPath(_state.config.basePath, entry.name) }));
-	row1.appendChild(buildElement({ class: 'text', text: 'to' }));
-	const uiPath = row1.appendChild(buildElement({ class: 'path' }));
-
 	/* construct the map of already fetched directories (cache them) */
-	const fetched = { [_state.config.basePath]: [] };
+	const baseList = [];
 	for (const entry of _state.list) {
 		if (entry.kind == 'directory')
-			fetched[_state.config.basePath].push(entry.name);
+			baseList.push(entry.name);
 	}
+	const fetched = { [_state.config.basePath]: baseList };
 
-	/* helper to setup the list */
-	const content = document.getElementById('menu-content');
-	const setupList = (path) => {
+	/* setup the failure, navigation helper, and list setup functions */
+	const failFetch = (msg) => {
+		_state.pushNotification(_state.makeStaticText(msg, false));
+		_state.updateOverlay('menu-overlay', false);
+	};
+	const navigateList = (target) => {
+		if (target in fetched)
+			return updateView(target);
+
+		/* fetch the directory state from the server */
+		fetch(`${_state.buildPath(false, target)}?raw=true`)
+			.then((resp) => {
+				if (!resp.ok)
+					return failFetch(`Error reading directory: ${resp.statusText}`);
+				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
+					return failFetch('Unexpected server response');
+				resp.json().then((content) => {
+					console.log(`Directory [${target}] fetched`);
+
+					/* collect the list of directories and update the view */
+					const targetList = [];
+					for (const name in content) {
+						if (content[name].kind == 'directory')
+							targetList.push(name);
+					}
+					fetched[target] = targetList;
+					updateView(target);
+				}).catch(() => failFetch('Malformed server response'));
+			})
+			.catch(() => failFetch('Network error'));
+	};
+	const updateView = (path) => {
 		const directories = fetched[path];
-		_state.updateMenuLength(directories.length + (path == '/' ? 0 : 1));
-		uiPath.innerText = path;
 
-		let index = 0;
-		if (path != '/') {
-			content.children[0].children[0].appendChild(_state.loadIcon('Back', 'back'));
-			content.children[0].children[1].classList.add('path');
-			content.children[0].children[1].innerText = '..';
-			++index;
-		}
+		/* update the confirmation button */
+		if (move && path == _state.config.basePath)
+			confirm.classList.add('disabled');
+		else
+			confirm.classList.remove('disabled');
 
+		/* construct the actual entries */
+		_state.updateMenuLength(directories.length);
 		for (let i = 0; i < directories.length; ++i) {
-			content.children[i + index].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
-			content.children[i + index].children[1].classList.add('path');
-			content.children[i + index].children[1].innerText = directories[i];
+			content.children[i].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
+			content.children[i].children[1].classList.add('path');
+			content.children[i].children[1].innerText = directories[i];
+			content.children[i].onclick = () => navigateList(_state.appendToPath(path, directories[i]));
 		}
+
+		/* update the navigation */
+		navigation.replaceChildren(_state.makeLocation(path, (target) => navigateList(target)));
 	};
 
 	/* construct the initial list and show the actual menu */
-	setupList(_state.config.basePath);
+	updateView(_state.config.basePath);
 	_state.updateOverlay('menu-overlay', true);
 }
 _state.showCreateMenu = () => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
-	document.getElementById('menu-caption').classList.add('hidden');
+	document.getElementById('menu-navigation').classList.add('hidden');
 	document.getElementById('menu-confirm').classList.add('hidden');
 
 	/* initialize the menu list size */
@@ -543,9 +612,7 @@ _state.createListEntry = (params) => {
 	const info = details.appendChild(buildElement({ class: 'info' }));
 	const size = info.appendChild(buildElement({ text: '-' }));
 	const date = info.appendChild(buildElement({ text: '-' }));
-
-	const menu = row.appendChild(buildElement({ class: 'button option' }));
-	menu.appendChild(_state.loadIcon('Menu', 'menu'));
+	const menu = row.appendChild(buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') }));
 
 	return { ...params, html: { row, name, size, date, menu } };
 }
@@ -632,40 +699,14 @@ window.onload = () => {
 
 	/* setup the initial icons to be loaded */
 	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', 'back'));
-	document.getElementById('icon-home').appendChild(_state.loadIcon('Home', 'home'));
 	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', 'create'));
 
-	/* build the location and setup the references references */
-	const location = document.getElementById('location');
-	const basePath = _state.config.basePath;
-	document.getElementById('button-home').href = _state.buildPath(false);
-	if (basePath == '/')
+	/* build the location and setup the references */
+	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.basePath, null));
+	if (_state.config.basePath == '/')
 		document.getElementById('button-parent').classList.add('disabled');
-	else {
-		document.getElementById('button-parent').href = _state.buildPath(false, basePath.substring(0, basePath.lastIndexOf('/')));
-
-		for (let i = 1, end = 0; i < basePath.length; i = end + 1) {
-			end = basePath.indexOf('/', i);
-			if (end < 0)
-				end = basePath.length;
-
-			if (i > 1)
-				location.appendChild(buildElement({ class: 'separator', text: '/' }));
-			const entry = location.appendChild(buildElement({ kind: 'a', class: 'component button', text: basePath.substring(i, end) }));
-			entry.href = _state.buildPath(false, basePath.substring(0, end));
-		}
-	}
-
-	/* register the location listener to ensure the location is scroll end-favoring
-	*	(to preserve the closer parents on small views; initialize for initial load) */
-	let lastWidth = location.clientWidth;
-	location.scrollLeft = location.scrollWidth - lastWidth;
-	new ResizeObserver(() => {
-		const width = location.clientWidth;
-		if (width < lastWidth && location.scrollLeft + lastWidth >= location.scrollWidth)
-			location.scrollLeft = location.scrollWidth - width;
-		lastWidth = width;
-	}).observe(location);
+	else
+		document.getElementById('button-parent').href = _state.buildPath(false, _state.config.basePath.substring(0, _state.config.basePath.lastIndexOf('/')));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
