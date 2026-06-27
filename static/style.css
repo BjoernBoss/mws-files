@@ -354,22 +354,82 @@
 	align-self: center;
 	border-radius: 6px;
 	border: 1px solid #202020;
-	background-color: #e8e8e8;
 	width: max-content;
-	min-width: min(calc(100% - 2em), max(25em, 30%));
 	margin: 1em;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
 	user-select: none;
+	background-color: #ffffff;
+}
+
+.menu.small {
+	min-width: min(calc(100% - 2em), 15em);
+}
+
+.menu.large {
+	min-width: min(calc(100% - 2em), max(30em, 30%));
 }
 
 .menu .navigation {
 	padding: 15px 20px;
 	border-bottom: 1px solid #c0c0c0;
+	background-color: #e8e8e8;
 }
 
 .menu .navigation.hidden {
+	display: none;
+}
+
+.menu .body {
+	position: relative;
+}
+
+.menu .window {
+	height: 20em;
+	overflow: auto;
+}
+
+.menu .body .busy {
+	position: absolute;
+	top: 0;
+	left: 0;
+	background-color: #00000060;
+	backdrop-filter: blur(1px);
+	width: 100%;
+	height: 100%;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+
+.menu .body .busy.hidden {
+	display: none;
+}
+
+.menu .body .busy .spinner {
+	width: 2em;
+	height: 2em;
+	border: 4px solid #00000030;
+	border-top-color: currentColor;
+	border-radius: 50%;
+	animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(1turn);
+	}
+}
+
+.menu .body .empty {
+	margin-top: 0.75em;
+	color: #808080;
+	width: 100%;
+	text-align: center;
+}
+
+.menu .body .empty.hidden {
 	display: none;
 }
 
@@ -420,6 +480,7 @@
 }
 
 .menu .footer {
+	background-color: #e8e8e8;
 	border-top: 1px solid #c0c0c0;
 	display: flex;
 	flex-direction: row;
@@ -443,43 +504,6 @@
 
 .menu .footer .separate.hidden {
 	display: none;
-}
-
-.menu .body {
-	background-color: #ffffff;
-	position: relative;
-}
-
-.menu .body .busy {
-	position: absolute;
-	top: 0;
-	left: 0;
-	background-color: #00000060;
-	backdrop-filter: blur(1px);
-	width: 100%;
-	height: 100%;
-	display: flex;
-	justify-content: center;
-	align-items: center;
-}
-
-.menu .body .busy.hidden {
-	display: none;
-}
-
-.menu .body .busy .spinner {
-	width: 2em;
-	height: 2em;
-	border: 4px solid #00000030;
-	border-top-color: currentColor;
-	border-radius: 50%;
-	animation: spin 800ms linear infinite;
-}
-
-@keyframes spin {
-	to {
-		transform: rotate(1turn);
-	}
 }
 
 .notifications {

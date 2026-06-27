@@ -11,7 +11,7 @@
 
 	<div class="content">
 		<div id="content" class="window"></div>
-		<div id="empty-directory" class="empty">Directory is empty</div>
+		<div id="content-empty" class="empty">Directory is empty</div>
 	</div>
 
 	<div class="notifications" id="notifications"></div>
@@ -23,17 +23,29 @@
 	</div>
 
 	<div class="overlay hidden" id="menu-overlay">
-		<div class="menu">
-			<div class="navigation" id="menu-navigation"></div>
+		<div class="menu small">
+			<div id="menu-content"></div>
+			<div class="footer">
+				<div class="button" id="menu-abort">Cancel</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="overlay hidden" id="pick-overlay">
+		<div class="menu large">
+			<div class="navigation" id="pick-navigation"></div>
 			<div class="body">
-				<div id="menu-content"></div>
-				<div class="busy hidden" id="menu-busy">
+				<div class="window">
+					<div id="pick-content"></div>
+					<div id="pick-content-empty" class="empty">Directory is empty</div>
+				</div>
+				<div class="busy hidden" id="pick-busy">
 					<div class="spinner"></div>
 				</div>
 			</div>
 			<div class="footer">
-				<div class="button separate" id="menu-confirm">Confirm</div>
-				<div class="button" id="menu-abort">Cancel</div>
+				<div class="button separate" id="pick-confirm">Confirm</div>
+				<div class="button" id="pick-abort">Cancel</div>
 			</div>
 		</div>
 	</div>

@@ -222,25 +222,33 @@ _state.makeLocation = (path, cb) => {
 	return location;
 }
 
-_state.updateMenuLength = (length) => {
-	const content = document.getElementById('menu-content');
-
+_state.updateMenuLength = (element, length) => {
 	/* format the list properly and ensure all existing elements are properly reset */
-	while (content.children.length > length)
-		content.lastChild.remove();
-	for (const child of content.children) {
+	while (element.children.length > length)
+		element.lastChild.remove();
+	for (const child of element.children) {
 		child.children[0].innerText = '';
 		child.children[1].classList = 'text';
 		child.classList = 'button option';
 	}
-	while (content.children.length < length) {
-		const option = content.appendChild(buildElement({ class: 'button option' }));
+	while (element.children.length < length) {
+		const option = element.appendChild(buildElement({ class: 'button option' }));
 		option.appendChild(buildElement({ class: 'icon' }));
 		option.appendChild(buildElement({ class: 'text' }));
 	}
 }
+_state.hideOverlays = (skip) => {
+	for (const name of ['menu', 'pick', 'remove']) {
+		if (name != skip)
+			_state.updateOverlay(`${name}-overlay`, null);
+	}
+}
 _state.updateOverlay = (name, notify) => {
 	const overlay = document.getElementById(name);
+
+	/* hide all other overlays */
+	if (notify != null)
+		_state.hideOverlays(name);
 
 	/* check if a notification callback has been registered and register the next callback */
 	if (name in _state.overlay) {
@@ -274,12 +282,9 @@ _state.updateOverlay = (name, notify) => {
 	}
 }
 _state.showEntryMenu = (entry) => {
-	document.getElementById('menu-navigation').classList.add('hidden');
-	document.getElementById('menu-confirm').classList.add('hidden');
-
 	/* initialize the menu list size */
 	const content = document.getElementById('menu-content');
-	_state.updateMenuLength(7);
+	_state.updateMenuLength(content, 7);
 
 	/* update the texts and icons */
 	content.children[0].children[0].appendChild(_state.loadIcon('Download', 'download'));
@@ -318,121 +323,16 @@ _state.showEntryMenu = (entry) => {
 		if (index != null)
 			_state.renameEntry(index);
 	};
-	content.children[2].onclick = () => _state.showMoveCopyMenu(entry, false);
-	content.children[3].onclick = () => _state.showMoveCopyMenu(entry, true);
-}
-_state.showMoveCopyMenu = (entry, move) => {
-	if (!_state.config.upload)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
-
-	/* show the menu navigation and configure the confirm button */
-	const navigation = document.getElementById('menu-navigation');
-	const confirm = document.getElementById('menu-confirm');
-	const content = document.getElementById('menu-content');
-	navigation.classList.remove('hidden');
-	confirm.classList.remove('hidden');
-	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
-
-	/* construct the map of already fetched directories (cache them) */
-	const baseList = [];
-	for (const entry of _state.list) {
-		if (entry.kind == 'directory')
-			baseList.push(entry.name);
-	}
-	const fetched = { [_state.config.basePath]: baseList };
-
-	/* setup the failure, navigation helper, and list setup functions */
-	let settled = false, fetching = false, busyTimer = null;
-	const failFetch = (msg) => {
-		if (settled) return;
-		_state.pushNotification(_state.makeStaticText(msg, false));
-		_state.updateOverlay('menu-overlay', null);
-	};
-	const clearBusy = () => {
-		if (busyTimer != null)
-			clearTimeout(busyTimer);
-		busyTimer = null;
-		document.getElementById('menu-busy').classList.add('hidden');
-	};
-	const navigateList = (target) => {
-		if (settled || fetching)
-			return;
-		if (target in fetched)
-			return updateView(target);
-
-		/* mark a fetch as being active and start the timer to trigger the spinner animation (dont show it immediately) */
-		fetching = true;
-		busyTimer = setTimeout(() => {
-			if (settled) return;
-			document.getElementById('menu-busy').classList.remove('hidden');
-			busyTimer = null;
-		}, DELAY_UNTIL_SPINNER);
-
-		/* fetch the directory state from the server */
-		fetch(`${_state.buildPath(false, target)}?raw=true`)
-			.then((resp) => {
-				if (!resp.ok)
-					return failFetch(`Error reading directory: ${resp.statusText}`);
-				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
-					return failFetch('Unexpected server response');
-				resp.json().then((content) => {
-					console.log(`Directory [${target}] fetched`);
-
-					/* mark the fetching as being completed */
-					fetching = false;
-					clearBusy();
-
-					/* collect the list of directories and update the view */
-					const targetList = [];
-					for (const name in content) {
-						if (content[name].kind == 'directory')
-							targetList.push(name);
-					}
-					fetched[target] = targetList;
-					updateView(target);
-				}).catch(() => failFetch('Malformed server response'));
-			})
-			.catch(() => failFetch('Network error'));
-	};
-	const updateView = (path) => {
-		if (settled) return;
-		const directories = fetched[path];
-
-		/* update the confirmation button */
-		if (move && path == _state.config.basePath)
-			confirm.classList.add('disabled');
-		else
-			confirm.classList.remove('disabled');
-
-		/* construct the actual entries */
-		_state.updateMenuLength(directories.length);
-		for (let i = 0; i < directories.length; ++i) {
-			content.children[i].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
-			content.children[i].children[1].classList.add('path');
-			content.children[i].children[1].innerText = directories[i];
-			content.children[i].onclick = () => navigateList(_state.appendToPath(path, directories[i]));
-		}
-
-		/* update the navigation */
-		navigation.replaceChildren(_state.makeLocation(path, (target) => navigateList(target)));
-	};
-
-	/* construct the initial list and show the actual menu */
-	updateView(_state.config.basePath);
-	_state.updateOverlay('menu-overlay', () => {
-		settled = true;
-		clearBusy();
-	});
+	content.children[2].onclick = () => _state.showMoveCopyPicker(entry, false);
+	content.children[3].onclick = () => _state.showMoveCopyPicker(entry, true);
 }
 _state.showCreateMenu = () => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
-	document.getElementById('menu-navigation').classList.add('hidden');
-	document.getElementById('menu-confirm').classList.add('hidden');
 
 	/* initialize the menu list size */
 	const content = document.getElementById('menu-content');
-	_state.updateMenuLength(3);
+	_state.updateMenuLength(content, 3);
 
 	/* update the texts and icons */
 	content.children[0].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
@@ -476,6 +376,117 @@ _state.showCreateMenu = () => {
 		};
 		input.click();
 	};
+}
+_state.showMoveCopyPicker = (entry, move) => {
+	if (!_state.config.upload)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+
+	/* show the menu navigation and configure the confirm button */
+	const navigation = document.getElementById('pick-navigation');
+	const confirm = document.getElementById('pick-confirm');
+	const content = document.getElementById('pick-content');
+	navigation.classList.remove('hidden');
+	confirm.classList.remove('hidden');
+	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
+
+	/* construct the map of already fetched directories (cache them) */
+	const baseList = [];
+	for (const entry of _state.list) {
+		if (entry.kind == 'directory')
+			baseList.push(entry.name);
+	}
+	const fetched = { [_state.config.basePath]: baseList.sort() };
+
+	/* setup the failure, navigation helper, and list setup functions */
+	let settled = false, fetching = false, busyTimer = null;
+	const failFetch = (msg) => {
+		if (settled) return;
+		_state.pushNotification(_state.makeStaticText(msg, false));
+		_state.updateOverlay('pick-overlay', null);
+	};
+	const clearBusy = () => {
+		if (busyTimer != null)
+			clearTimeout(busyTimer);
+		busyTimer = null;
+		document.getElementById('pick-busy').classList.add('hidden');
+	};
+	const navigateList = (target) => {
+		if (settled || fetching)
+			return;
+		if (target in fetched)
+			return updateView(target);
+
+		/* mark a fetch as being active and start the timer to trigger the spinner animation (dont show it immediately) */
+		fetching = true;
+		busyTimer = setTimeout(() => {
+			if (settled) return;
+			document.getElementById('pick-busy').classList.remove('hidden');
+			busyTimer = null;
+		}, DELAY_UNTIL_SPINNER);
+
+		/* fetch the directory state from the server */
+		fetch(`${_state.buildPath(false, target)}?raw=true`)
+			.then((resp) => {
+				if (!resp.ok)
+					return failFetch(`Error reading directory: ${resp.statusText}`);
+				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
+					return failFetch('Unexpected server response');
+				resp.json().then((content) => {
+					console.log(`Directory [${target}] fetched`);
+
+					/* mark the fetching as being completed */
+					fetching = false;
+					clearBusy();
+
+					/* collect the list of directories and update the view */
+					const targetList = [];
+					for (const name in content) {
+						if (content[name].kind == 'directory')
+							targetList.push(name);
+					}
+					fetched[target] = targetList.sort();
+					updateView(target);
+				}).catch(() => failFetch('Malformed server response'));
+			})
+			.catch(() => failFetch('Network error'));
+	};
+	const updateView = (path) => {
+		if (settled) return;
+		const directories = fetched[path];
+
+		/* update the confirmation button */
+		if (move && path == _state.config.basePath)
+			confirm.classList.add('disabled');
+		else
+			confirm.classList.remove('disabled');
+
+		/* construct the actual entries */
+		_state.updateMenuLength(content, directories.length);
+		for (let i = 0; i < directories.length; ++i) {
+			content.children[i].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
+			content.children[i].children[1].classList.add('path');
+			content.children[i].children[1].innerText = directories[i];
+			content.children[i].onclick = () => navigateList(_state.appendToPath(path, directories[i]));
+		}
+
+
+		/* check if the directory is empty */
+		if (directories.length == 0)
+			document.getElementById('pick-content-empty').classList.remove('hidden');
+		else
+			document.getElementById('pick-content-empty').classList.add('hidden');
+
+
+		/* update the navigation */
+		navigation.replaceChildren(_state.makeLocation(path, (target) => navigateList(target)));
+	};
+
+	/* construct the initial list and show the actual menu */
+	updateView(_state.config.basePath);
+	_state.updateOverlay('pick-overlay', () => {
+		settled = true;
+		clearBusy();
+	});
 }
 
 _state.renameEntry = (index) => {
@@ -729,9 +740,9 @@ _state.updateList = (content) => {
 
 	/* check if the list is empty and add the placeholder */
 	if (_state.list.length == 0 && _state.listFake == null)
-		document.getElementById('empty-directory').classList.remove('hidden')
+		document.getElementById('content-empty').classList.remove('hidden');
 	else
-		document.getElementById('empty-directory').classList.add('hidden');
+		document.getElementById('content-empty').classList.add('hidden');
 	console.log(`content list has been updated to ${_state.list.length + (_state.listFake != null ? 1 : 0)} entries...`);
 }
 
@@ -801,38 +812,21 @@ window.onload = () => {
 		document.getElementById('create-button').onclick = () => _state.showCreateMenu();
 	}
 
-	/* register all relevant delete overlay handler */
-	const removeOverlay = document.getElementById('remove-overlay');
-	removeOverlay.children[0].onmousedown = (e) => {
-		e.stopPropagation();
-	};
-	removeOverlay.onmousedown = (e) => {
-		e.preventDefault();
-		_state.updateOverlay('remove-overlay', null);
-	};
-	document.getElementById('remove-abort').onclick = () => {
-		_state.updateOverlay('remove-overlay', null);
-	};
-
-	/* register all relevant menu overlay handler */
-	const menuOverlay = document.getElementById('menu-overlay');
-	menuOverlay.children[0].onmousedown = (e) => {
-		e.stopPropagation();
-	};
-	menuOverlay.onmousedown = (e) => {
-		e.preventDefault();
-		_state.updateOverlay('menu-overlay', null);
-	};
-	document.getElementById('menu-abort').onclick = () => {
-		_state.updateOverlay('menu-overlay', null);
-	};
+	/* register all relevant overlay key handler */
+	for (const name of ['remove', 'menu', 'pick']) {
+		const overlay = document.getElementById(`${name}-overlay`);
+		overlay.children[0].onmousedown = (e) => e.stopPropagation();
+		overlay.onmousedown = (e) => {
+			e.preventDefault();
+			_state.updateOverlay(`${name}-overlay`, null);
+		};
+		document.getElementById(`${name}-abort`).onclick = () => _state.updateOverlay(`${name}-overlay`, null);
+	}
 
 	/* register convenience handlers for overlays */
 	document.onkeydown = (e) => {
-		if (e.key == 'Escape') {
-			_state.updateOverlay('menu-overlay', null);
-			_state.updateOverlay('remove-overlay', null);
-		}
+		if (e.key == 'Escape')
+			_state.hideOverlays();
 	};
 
 	/* load the initial content list */
