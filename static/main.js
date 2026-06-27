@@ -286,9 +286,13 @@ _state.showEntryMenu = (entry) => {
 	content.children[0].children[1].innerText = 'Download';
 	content.children[1].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
 	content.children[1].children[1].innerText = 'Rename';
+	content.children[2].children[0].appendChild(_state.loadIcon('Copy', 'copy'));
 	content.children[2].children[1].innerText = 'Copy to...';
+	content.children[3].children[0].appendChild(_state.loadIcon('Move', 'move'));
 	content.children[3].children[1].innerText = 'Move to...';
+	content.children[4].children[0].appendChild(_state.loadIcon('Open', 'open'));
 	content.children[4].children[1].innerText = 'Open';
+	content.children[5].children[0].appendChild(_state.loadIcon('Clipboard', 'clipboard'));
 	content.children[5].children[1].innerText = 'Copy URL';
 	content.children[6].children[0].appendChild(_state.loadIcon('Delete', 'delete'));
 	content.children[6].children[1].innerText = 'Delete';

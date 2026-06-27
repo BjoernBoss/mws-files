@@ -1,0 +1,10 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+	<path d="M15 14V10L10 5H3V22H15Z" stroke="currentColor" stroke-width="2px" stroke-linejoin="round" />
+	<path d="M15 10H10V5" stroke="currentColor" stroke-width="2px" stroke-linejoin="round" />
+
+	<path d="M9 5V2H16L21 7V19H15" stroke="currentColor" stroke-width="2px" stroke-linejoin="round" />
+	<path d="M21 7H16V2" stroke="currentColor" stroke-width="2px" stroke-linejoin="round" />
+</svg>
