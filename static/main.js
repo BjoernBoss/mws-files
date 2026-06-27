@@ -4,12 +4,13 @@
 const REMOVE_NOTIFICATION_ANIMATION = 35;
 const FADE_NOTIFICATION_ANIMATION = 3500;
 const TRANSITION_OVERLAY_ANIMATION = 40;
+const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 150;
 const COLOR_UI_SUCCESS = '#30a080';
 const COLOR_UI_ERROR = '#b05050';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], listFake: null, loadedIcons: {}, config: {} };
+const _state = { list: [], listFake: null, loadedIcons: {}, config: {}, overlay: {} };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -238,8 +239,17 @@ _state.updateMenuLength = (length) => {
 		option.appendChild(buildElement({ class: 'text' }));
 	}
 }
-_state.updateOverlay = (name, show) => {
+_state.updateOverlay = (name, notify) => {
 	const overlay = document.getElementById(name);
+
+	/* check if a notification callback has been registered and register the next callback */
+	if (name in _state.overlay) {
+		_state.overlay[name]();
+		delete _state.overlay[name];
+	}
+	const show = (notify != null);
+	if (show)
+		_state.overlay[name] = notify;
 
 	/* manually animate, due to changing the display type */
 	if (show) {
@@ -285,7 +295,8 @@ _state.showEntryMenu = (entry) => {
 	content.children[6].classList.add('delete');
 
 	/* show the actual menu */
-	_state.updateOverlay('menu-overlay', true);
+	let settled = false;
+	_state.updateOverlay('menu-overlay', () => { settled = true; });
 
 	/* wire up the corresponding click logic */
 	const resolveIndex = () => {
@@ -296,7 +307,9 @@ _state.showEntryMenu = (entry) => {
 		return null;
 	};
 	content.children[1].onclick = () => {
-		_state.updateOverlay('menu-overlay', false);
+		if (settled) return;
+		_state.updateOverlay('menu-overlay', null);
+
 		const index = resolveIndex();
 		if (index != null)
 			_state.renameEntry(index);
@@ -325,13 +338,31 @@ _state.showMoveCopyMenu = (entry, move) => {
 	const fetched = { [_state.config.basePath]: baseList };
 
 	/* setup the failure, navigation helper, and list setup functions */
+	let settled = false, fetching = false, busyTimer = null;
 	const failFetch = (msg) => {
+		if (settled) return;
 		_state.pushNotification(_state.makeStaticText(msg, false));
-		_state.updateOverlay('menu-overlay', false);
+		_state.updateOverlay('menu-overlay', null);
+	};
+	const clearBusy = () => {
+		if (busyTimer != null)
+			clearTimeout(busyTimer);
+		busyTimer = null;
+		document.getElementById('menu-busy').classList.add('hidden');
 	};
 	const navigateList = (target) => {
+		if (settled || fetching)
+			return;
 		if (target in fetched)
 			return updateView(target);
+
+		/* mark a fetch as being active and start the timer to trigger the spinner animation (dont show it immediately) */
+		fetching = true;
+		busyTimer = setTimeout(() => {
+			if (settled) return;
+			document.getElementById('menu-busy').classList.remove('hidden');
+			busyTimer = null;
+		}, DELAY_UNTIL_SPINNER);
 
 		/* fetch the directory state from the server */
 		fetch(`${_state.buildPath(false, target)}?raw=true`)
@@ -342,6 +373,10 @@ _state.showMoveCopyMenu = (entry, move) => {
 					return failFetch('Unexpected server response');
 				resp.json().then((content) => {
 					console.log(`Directory [${target}] fetched`);
+
+					/* mark the fetching as being completed */
+					fetching = false;
+					clearBusy();
 
 					/* collect the list of directories and update the view */
 					const targetList = [];
@@ -356,6 +391,7 @@ _state.showMoveCopyMenu = (entry, move) => {
 			.catch(() => failFetch('Network error'));
 	};
 	const updateView = (path) => {
+		if (settled) return;
 		const directories = fetched[path];
 
 		/* update the confirmation button */
@@ -379,7 +415,10 @@ _state.showMoveCopyMenu = (entry, move) => {
 
 	/* construct the initial list and show the actual menu */
 	updateView(_state.config.basePath);
-	_state.updateOverlay('menu-overlay', true);
+	_state.updateOverlay('menu-overlay', () => {
+		settled = true;
+		clearBusy();
+	});
 }
 _state.showCreateMenu = () => {
 	if (!_state.config.upload)
@@ -400,16 +439,18 @@ _state.showCreateMenu = () => {
 	content.children[2].children[1].innerText = 'Upload Directory';
 
 	/* show the actual menu */
-	_state.updateOverlay('menu-overlay', true);
+	let settled = false;
+	_state.updateOverlay('menu-overlay', () => { settled = true; });
 
 	/* wire up the corresponding click logic */
 	content.children[0].onclick = () => {
-		_state.updateOverlay('menu-overlay', false);
-
+		if (settled) return;
+		_state.updateOverlay('menu-overlay', null);
 		_state.renameEntry(null);
 	};
 	content.children[1].onclick = () => {
-		_state.updateOverlay('menu-overlay', false);
+		if (settled) return;
+		_state.updateOverlay('menu-overlay', null);
 
 		const input = document.createElement('input');
 		input.type = 'file', input.multiple = true, input.onchange = () => {
@@ -420,7 +461,8 @@ _state.showCreateMenu = () => {
 		input.click();
 	};
 	content.children[2].onclick = () => {
-		_state.updateOverlay('menu-overlay', false);
+		if (settled) return;
+		_state.updateOverlay('menu-overlay', null);
 
 		const input = document.createElement('input');
 		input.type = 'file', input.webkitdirectory = true, input.onchange = () => {
@@ -571,11 +613,14 @@ _state.removeFile = (name) => {
 		return _state.pushNotification(_state.makeStaticText('Not allowed to remove content', false));
 	console.log(`confirming removing [${name}]...`);
 	document.getElementById('remove-name').innerText = name;
-	_state.updateOverlay('remove-overlay', true);
+
+	let settled = false;
+	_state.updateOverlay('remove-overlay', () => { settled = true; });
 
 	document.getElementById('remove-confirm').onclick = () => {
+		if (settled) return;
 		console.log(`removing [${name}]...`);
-		_state.updateOverlay('remove-overlay', false);
+		_state.updateOverlay('remove-overlay', null);
 
 		const [element, update] = _state.makeDelayedStatus(`Remove: ${name}`);
 		const fadeOut = _state.pushNotification(element);
@@ -759,10 +804,10 @@ window.onload = () => {
 	};
 	removeOverlay.onmousedown = (e) => {
 		e.preventDefault();
-		_state.updateOverlay('remove-overlay', false);
+		_state.updateOverlay('remove-overlay', null);
 	};
 	document.getElementById('remove-abort').onclick = () => {
-		_state.updateOverlay('remove-overlay', false);
+		_state.updateOverlay('remove-overlay', null);
 	};
 
 	/* register all relevant menu overlay handler */
@@ -772,17 +817,17 @@ window.onload = () => {
 	};
 	menuOverlay.onmousedown = (e) => {
 		e.preventDefault();
-		_state.updateOverlay('menu-overlay', false);
+		_state.updateOverlay('menu-overlay', null);
 	};
 	document.getElementById('menu-abort').onclick = () => {
-		_state.updateOverlay('menu-overlay', false);
+		_state.updateOverlay('menu-overlay', null);
 	};
 
 	/* register convenience handlers for overlays */
 	document.onkeydown = (e) => {
 		if (e.key == 'Escape') {
-			_state.updateOverlay('menu-overlay', false);
-			_state.updateOverlay('remove-overlay', false);
+			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('remove-overlay', null);
 		}
 	};
 
