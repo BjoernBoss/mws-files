@@ -390,7 +390,7 @@
 }
 
 .menu.large {
-	min-width: min(calc(100% - 2em), max(30em, 30%));
+	min-width: min(calc(100% - 2em), 45em);
 }
 
 .menu .navigation .create {
@@ -480,9 +480,7 @@
 }
 
 .menu .option .text.path {
-	text-align: left;
 	font-family: monospace;
-	font-size: 1.3em;
 }
 
 .menu .option .text:focus {

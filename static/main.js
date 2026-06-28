@@ -371,11 +371,11 @@ _state.showEntryMenu = (entry) => {
 					return console.log(`Copy [${_state.buildPath(true, entry.name)}] to: ${path}`);
 
 				/* find the temporary name to be used */
-				let tempName = entry.name;
-				for (let tested = 0; tested < _state.list.length;) {
-					tempName += ' - Copy', tested = 0;
-					while (tested < _state.list.length && _state.list[tested].name != tempName)
-						++tested;
+				let tempName = '';
+				for (let i = 1; ; ++i) {
+					tempName = `${entry.name} (${i})`;
+					if (_state.list.findIndex((v) => v.name == tempName) < 0)
+						break;
 				}
 
 				/* for an in-place copy, create a new temporary entry to be renamed */
@@ -480,7 +480,8 @@ _state.showCreateMenu = () => {
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
 			promise.then((fileName) => {
-				_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: 0 }]));
+				if (_state.list.findIndex((v) => v.name == fileName) < 0)
+					_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: 0 }]));
 			}).catch(() => { });
 		});
 	};
@@ -639,8 +640,13 @@ _state.showMoveCopyPicker = (move, callback) => {
 				promise.then((fileName) => {
 					if (settled) return;
 					clearBusy();
-					fetched[path].push(fileName).sort();
+					fetched[path].push(fileName);
+					fetched[path].sort();
 					updateView(path);
+
+					/* check if it should also be pushed to the root list (ensure that a new list is created) */
+					if (path == _state.config.basePath && _state.list.findIndex((v) => v.name == fileName) < 0)
+						_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: 0 }]));
 				}).catch(() => {
 					if (settled) return;
 					clearBusy();
