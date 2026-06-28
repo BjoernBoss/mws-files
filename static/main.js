@@ -179,8 +179,7 @@ _state.makeLocation = (path, cb) => {
 	const location = buildElement({ class: 'wrapper location' });
 
 	/* add the home button */
-	const home = location.appendChild(buildElement({ kind, class: 'button' }));
-	home.appendChild(buildElement({ class: 'icon', child: _state.loadIcon('Home', 'home') }));
+	const home = location.appendChild(buildElement({ kind, class: 'button icon', child: _state.loadIcon('Home', 'home') }));
 
 	/* update the logic for home */
 	if (cb == null)
@@ -197,7 +196,7 @@ _state.makeLocation = (path, cb) => {
 			end = path.length;
 
 		location.appendChild(buildElement({ class: 'separator', text: '>' }));
-		const entry = location.appendChild(buildElement({ kind, class: 'button', text: path.substring(i, end) }));
+		const entry = location.appendChild(buildElement({ kind, class: 'button text', text: path.substring(i, end) }));
 
 		/* wire up the button logic */
 		if (cb == null)
@@ -208,10 +207,10 @@ _state.makeLocation = (path, cb) => {
 			entry.classList.add('disabled');
 	}
 
-	/* register the location listener to ensure the location is scroll end-favoring
-	*	(to preserve the closer parents on small views; initialize for initial load) */
+	/* register the location listener to ensure the location is scroll end-favoring (to preserve
+	*	the closer parents on small views; initialize for initial load to be right-aligned) */
 	let lastWidth = location.clientWidth;
-	location.scrollLeft = location.scrollWidth - lastWidth;
+	requestAnimationFrame(() => location.scrollLeft = location.scrollWidth - lastWidth);
 	new ResizeObserver(() => {
 		const width = location.clientWidth;
 		if (width < lastWidth && location.scrollLeft + lastWidth >= location.scrollWidth)
@@ -415,8 +414,6 @@ _state.showMoveCopyPicker = (entry, move) => {
 	const navigation = document.getElementById('pick-navigation');
 	const confirm = document.getElementById('pick-confirm');
 	const content = document.getElementById('pick-content');
-	navigation.classList.remove('hidden');
-	confirm.classList.remove('hidden');
 	confirm.innerText = (move ? 'Move Here' : 'Copy Here');
 
 	/* construct the map of already fetched directories (cache them) */
@@ -508,9 +505,12 @@ _state.showMoveCopyPicker = (entry, move) => {
 		else
 			document.getElementById('pick-content-empty').classList.add('hidden');
 
-
-		/* update the navigation */
-		navigation.replaceChildren(_state.makeLocation(path, (target) => navigateList(target)));
+		/* update the navigation and add the create-button */
+		const location = _state.makeLocation(path, (target) => navigateList(target));
+		if (navigation.children.length == 1)
+			navigation.insertBefore(location, navigation.children[0]);
+		else
+			navigation.replaceChild(location, navigation.children[0]);
 	};
 
 	/* construct the initial list and show the actual menu */
@@ -798,8 +798,9 @@ window.onload = () => {
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* setup the initial icons to be loaded */
-	document.getElementById('icon-parent').appendChild(_state.loadIcon('Parent', 'back'));
-	document.getElementById('icon-create').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
+	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
 
 	/* build the location and setup the references */
 	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.basePath, null));
@@ -813,7 +814,9 @@ window.onload = () => {
 		const dropDetector = document.getElementById('body');
 		const dropZone = document.getElementById('drop-zone');
 		let dropCountDepth = 0;
+
 		dropDetector.ondragenter = (e) => {
+			if (event.dataTransfer?.types?.includes('Files') !== true) return;
 			e.preventDefault();
 			if (dropCountDepth++ == 0)
 				dropZone.classList.add('expand');
@@ -823,12 +826,12 @@ window.onload = () => {
 			if (dropCountDepth > 0 && --dropCountDepth == 0)
 				dropZone.classList.remove('expand');
 		};
-		dropDetector.ondragend = (e) => {
-			dropCountDepth = 0;
-			dropZone.classList.remove('expand');
-		};
-		dropDetector.ondragover = (e) => e.preventDefault();
+		dropDetector.ondragover = (e) => {
+			if (event.dataTransfer?.types?.includes('Files') !== true) return;
+			e.preventDefault();
+		}
 		dropDetector.ondrop = (e) => {
+			if (event.dataTransfer?.types?.includes('Files') !== true) return;
 			e.preventDefault();
 			dropCountDepth = 0;
 			dropZone.classList.remove('expand');

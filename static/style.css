@@ -56,6 +56,8 @@
 }
 
 .navigation {
+	user-select: none;
+	font-weight: bold;
 	font-family: monospace;
 	display: flex;
 	flex-direction: row;
@@ -74,31 +76,34 @@
 	overflow: auto hidden;
 	background-color: #ffffff;
 	max-width: fit-content;
-	height: 100%;
 	display: flex;
 	flex-direction: row;
 	align-items: center;
 }
 
-.navigation .icon {
-	user-select: none;
-	width: 1.25em;
-}
-
 .navigation .location {
+	min-width: 0;
 	flex: 1;
-	font-weight: bold;
 }
 
-.navigation .button {
+.navigation .wrapper .button {
 	padding: 0.15em 0.75em;
-	min-width: fit-content;
 	border-radius: 3px;
 	height: 100%;
 	min-height: 1.8em;
 	display: flex;
 	align-items: center;
+}
+
+.navigation .wrapper .button.text {
+	min-width: fit-content;
 	white-space: nowrap;
+}
+
+.navigation .wrapper .button.icon {
+	width: 2.75em;
+	min-width: 2.75em;
+	overflow: hidden;
 }
 
 .navigation .separator {
@@ -108,7 +113,6 @@
 	display: flex;
 	align-items: center;
 	height: 1.4em;
-	user-select: none;
 }
 
 .content {
@@ -377,8 +381,14 @@
 	background-color: #e8e8e8;
 }
 
-.menu .navigation.hidden {
-	display: none;
+.menu .navigation .create {
+	margin-left: auto;
+}
+
+.menu .navigation .create .button {
+	width: 2em;
+	min-width: 2em;
+	padding: 0.25em;
 }
 
 .menu .body {
@@ -388,6 +398,11 @@
 .menu .window {
 	height: 20em;
 	overflow: auto;
+}
+
+.menu .window .list {
+	min-width: 100%;
+	width: max-content;
 }
 
 .menu .body .busy {
@@ -498,12 +513,8 @@
 	font-size: 1.3em;
 }
 
-.menu .footer .separate {
-	border-right: 1px solid #c0c0c0;
-}
-
-.menu .footer .separate.hidden {
-	display: none;
+.menu .footer .button+.button {
+	border-left: 1px solid #c0c0c0;
 }
 
 .notifications {

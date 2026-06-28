@@ -3,9 +3,7 @@
 <div class="main-body" id="body">
 	<div class="navigation" id="navigation">
 		<div class="wrapper">
-			<a class="button" id="button-parent">
-				<div class="icon" id="icon-parent"></div>
-			</a>
+			<a class="button icon" id="button-parent"></a>
 		</div>
 	</div>
 
@@ -17,9 +15,7 @@
 	<div class="notifications" id="notifications"></div>
 
 	<div class="modify hidden" id="create-wrap">
-		<div class="button" id="create-button">
-			<div id="icon-create"></div>
-		</div>
+		<div class="button" id="create-button"></div>
 	</div>
 
 	<div class="overlay hidden" id="menu-overlay">
@@ -33,10 +29,15 @@
 
 	<div class="overlay hidden" id="pick-overlay">
 		<div class="menu large">
-			<div class="navigation" id="pick-navigation"></div>
+			<div class="navigation" id="pick-navigation">
+				<div class="wrapper create">
+					<div class="button icon" id="pick-create">
+					</div>
+				</div>
+			</div>
 			<div class="body">
 				<div class="window">
-					<div id="pick-content"></div>
+					<div id="pick-content" class="list"></div>
 					<div id="pick-content-empty" class="empty">Directory is empty</div>
 				</div>
 				<div class="busy hidden" id="pick-busy">
@@ -44,7 +45,7 @@
 				</div>
 			</div>
 			<div class="footer">
-				<div class="button separate" id="pick-confirm">Confirm</div>
+				<div class="button" id="pick-confirm">Confirm</div>
 				<div class="button" id="pick-abort">Cancel</div>
 			</div>
 		</div>
