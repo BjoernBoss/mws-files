@@ -463,10 +463,11 @@
 .menu .option {
 	align-items: center;
 	font-size: 1.2em;
-	padding: 8px;
 	gap: 15px;
 	width: 100%;
 	display: flex;
+	padding: 0 8px;
+	min-height: 2.2em;
 }
 
 .menu .option+.option {
@@ -491,13 +492,18 @@
 	padding: 0px;
 }
 
+.menu .option .text .main {
+	font-size: 0.9em;
+}
+
 .menu .option .text .detail {
-	font-size: 0.6em;
+	font-size: 0.55em;
 	color: #909090;
 }
 
 .menu .option .icon {
-	padding-top: 2px;
+	padding-top: 9px;
+	padding-bottom: 7px;
 	min-width: 1.2em;
 	height: 100%;
 }

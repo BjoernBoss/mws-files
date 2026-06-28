@@ -285,10 +285,12 @@ _state.updateOverlay = (name, notify) => {
 }
 _state.showEntryMenu = (entry) => {
 	let menuSize = 2, entryIndex = 2;
-	if (_state.config.modify)
-		menuSize += 3;
+	if (_state.config.upload)
+		menuSize += 1;
 	if (_state.config.delete)
 		menuSize += 1;
+	if (_state.config.upload && _state.config.delete)
+		menuSize += 2;
 	if (navigator?.clipboard != null)
 		++menuSize;
 
@@ -342,7 +344,7 @@ _state.showEntryMenu = (entry) => {
 	}
 
 	/* register the modification interactions */
-	if (_state.config.modify) {
+	if (_state.config.upload && _state.config.delete) {
 		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
 		content.children[entryIndex].children[1].innerText = 'Rename';
 		content.children[entryIndex++].onclick = () => {
@@ -352,10 +354,12 @@ _state.showEntryMenu = (entry) => {
 			/* start renaming the element */
 			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), (fileName) => {
 				entry.html.name.innerText = entry.name;
-				if (fileName != null)
+				if (fileName != null && fileName != entry.name)
 					console.log(`Rename [${_state.buildPath(true, entry.name)}] to [${fileName}]`);
 			});
 		};
+	}
+	if (_state.config.upload) {
 		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Copy', 'copy'));
 		content.children[entryIndex].children[1].innerText = 'Copy to...';
 		content.children[entryIndex++].onclick = () => {
@@ -393,6 +397,8 @@ _state.showEntryMenu = (entry) => {
 				});
 			});
 		};
+	}
+	if (_state.config.upload && _state.config.delete) {
 		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Move', 'move'));
 		content.children[entryIndex].children[1].innerText = 'Move to...';
 		content.children[entryIndex++].onclick = () => {
@@ -435,15 +441,15 @@ _state.showCreateMenu = () => {
 	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
 	content.children[2].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
 	const row0 = buildElement();
-	row0.appendChild(buildElement({ text: 'Upload Files' }));
+	row0.appendChild(buildElement({ text: 'Upload Files', class: 'main' }));
 	content.children[1].children[1].replaceChildren(row0);
 	const row1 = buildElement();
-	row1.appendChild(buildElement({ text: 'Upload Directory' }));
+	row1.appendChild(buildElement({ text: 'Upload Directory', class: 'main' }));
 	content.children[2].children[1].replaceChildren(row1);
 
 	/* add the size marker */
 	if (_state.config.maxUploadSize != null) {
-		const text = `Max. ${_state.formatSize(_state.config.maxUploadSize)}`;
+		const text = `Max. ${_state.formatSize(_state.config.maxUploadSize)} per file`;
 		row0.appendChild(buildElement({ class: 'detail', text }));
 		row1.appendChild(buildElement({ class: 'detail', text }));
 	}
@@ -504,8 +510,8 @@ _state.showCreateMenu = () => {
 	};
 }
 _state.showMoveCopyPicker = (move, callback) => {
-	if (!_state.config.modify)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to modify content', false));
+	if (move ? (!_state.config.upload || !_state.config.delete) : (!_state.config.upload))
+		return _state.pushNotification(_state.makeStaticText(`Not allowed to ${move ? 'move' : 'copy'} content`, false));
 
 	/* show the menu navigation and configure the confirm button */
 	const navigation = document.getElementById('pick-navigation');
@@ -895,7 +901,6 @@ _state.updateList = (content) => {
 
 window.onload = () => {
 	/* parse the initial configuration */
-	_state.config.modify = (__LOAD_PARAMS__?.modify ?? false);
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
 	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
 	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
