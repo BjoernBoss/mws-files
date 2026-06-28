@@ -294,7 +294,7 @@
 }
 
 .overlay {
-	z-index: 3;
+	z-index: 2;
 	position: absolute;
 	background-color: #00000060;
 	width: 100%;
@@ -472,6 +472,13 @@
 	font-size: 1.3em;
 }
 
+.menu .option .text:focus {
+	outline: none;
+	border: solid 1px #404040;
+	border-radius: 4px;
+	padding: 0px;
+}
+
 .menu .option .icon {
 	padding-top: 2px;
 	min-width: 1.2em;
@@ -523,7 +530,7 @@
 	height: 100%;
 	right: 0;
 	top: 0;
-	z-index: 2;
+	z-index: 3;
 	user-select: none;
 	display: flex;
 	flex-direction: column;

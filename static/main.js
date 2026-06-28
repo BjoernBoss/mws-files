@@ -424,18 +424,17 @@ _state.showMoveCopyPicker = (entry, move) => {
 	}
 	const fetched = { [_state.config.basePath]: baseList.sort() };
 
-	/* setup the failure, navigation helper, and list setup functions */
-	let settled = false, fetching = false, busyTimer = null;
+	/* setup helper functions for the dialog */
+	let settled = false, busyTimer = null, cancelTask = () => { };
 	const failFetch = (msg) => {
 		if (settled) return;
 		_state.pushNotification(_state.makeStaticText(msg, false));
 		_state.updateOverlay('pick-overlay', null);
 	};
-	const makeBusy = () => {
+	const markAsBusy = () => {
 		busyTimer = setTimeout(() => {
 			if (settled) return;
 			document.getElementById('pick-busy').classList.remove('hidden');
-			busyTimer = null;
 		}, DELAY_UNTIL_SPINNER);
 	};
 	const clearBusy = () => {
@@ -444,28 +443,26 @@ _state.showMoveCopyPicker = (entry, move) => {
 		busyTimer = null;
 		document.getElementById('pick-busy').classList.add('hidden');
 	};
-	const navigateList = (target) => {
-		if (settled || fetching)
+	const navigateDirectories = (target) => {
+		if (settled || busyTimer != null)
 			return;
+		cancelTask();
 		if (target in fetched)
 			return updateView(target);
-
-		/* mark a fetch as being active and start the timer to trigger the spinner animation (dont show it immediately) */
-		fetching = true;
-		makeBusy();
+		markAsBusy();
 
 		/* fetch the directory state from the server */
 		fetch(`${_state.buildPath(false, target)}?raw=true`)
 			.then((resp) => {
+				if (settled) return;
+
 				if (!resp.ok)
 					return failFetch(`Error reading directory: ${resp.statusText}`);
 				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
 					return failFetch('Unexpected server response');
 				resp.json().then((content) => {
 					console.log(`Directory [${target}] fetched`);
-
-					/* mark the fetching as being completed */
-					fetching = false;
+					if (settled) return;
 					clearBusy();
 
 					/* collect the list of directories and update the view */
@@ -481,7 +478,6 @@ _state.showMoveCopyPicker = (entry, move) => {
 			.catch(() => failFetch('Network error'));
 	};
 	const updateView = (path) => {
-		if (settled) return;
 		const directories = fetched[path];
 
 		/* update the confirmation button */
@@ -496,7 +492,7 @@ _state.showMoveCopyPicker = (entry, move) => {
 			content.children[i].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
 			content.children[i].children[1].classList.add('path');
 			content.children[i].children[1].innerText = directories[i];
-			content.children[i].onclick = () => navigateList(_state.appendToPath(path, directories[i]));
+			content.children[i].onclick = () => navigateDirectories(_state.appendToPath(path, directories[i]));
 		}
 
 		/* check if the directory is empty */
@@ -506,46 +502,55 @@ _state.showMoveCopyPicker = (entry, move) => {
 			document.getElementById('pick-content-empty').classList.add('hidden');
 
 		/* update the navigation and add the create-button */
-		const location = _state.makeLocation(path, (target) => navigateList(target));
+		const location = _state.makeLocation(path, (target) => navigateDirectories(target));
 		if (navigation.children.length == 1)
 			navigation.insertBefore(location, navigation.children[0]);
 		else
 			navigation.replaceChild(location, navigation.children[0]);
+		navigation.children[1].onclick = () => {
+			cancelTask();
+			if (settled || busyTimer != null)
+				return;
+
+			/* create the temporary fake entry to be used for the renaming */
+			const entry = content.insertBefore(_state.createMenuEntry(), content.children[0] ?? null);
+			entry.children[0].appendChild(_state.loadIcon('Directory', 'directory'));
+			entry.children[1].classList.add('path');
+			entry.scrollIntoView();
+			document.getElementById('pick-content-empty').classList.add('hidden');
+
+			/* try to create the actual directory (cannot have a busy-timer, if the
+			*	promise is valid, as this implies that no cancel-task was called) */
+			cancelTask = _state.createDirectory(entry.children[1], path, () => true, (promise) => {
+				entry.remove();
+				if (promise == null || settled)
+					return;
+				markAsBusy();
+
+				/* await the completion of the creation */
+				promise.then((fileName) => {
+					if (settled) return;
+					clearBusy();
+					fetched[path].push(fileName).sort();
+					updateView(path);
+				}).catch(() => {
+					if (settled) return;
+					clearBusy();
+				});
+			});
+		};
 	};
 
 	/* construct the initial list and show the actual menu */
 	updateView(_state.config.basePath);
 	_state.updateOverlay('pick-overlay', () => {
 		settled = true;
+		cancelTask();
 		clearBusy();
 	});
-
-	/* test */
-	setTimeout(() => {
-		const entry = content.insertBefore(_state.createMenuEntry(), content.children[0] ?? null);
-		entry.children[0].appendChild(_state.loadIcon('Directory', 'directory'));
-		entry.children[1].classList.add('path');
-		entry.scrollIntoView();
-
-		_state.createDirectory(entry.children[1], _state.config.basePath, () => true, (promise) => {
-			entry.remove();
-			if (promise == null || settled) return;
-
-			makeBusy();
-			promise.then((fileName) => {
-				if (settled) return;
-				clearBusy();
-				fetched[_state.config.basePath].push(fileName).sort();
-				updateView(_state.config.basePath);
-			}).catch(() => {
-				if (settled) return;
-				clearBusy();
-			});
-		});
-	}, 5000);
 }
 
-_state.renameAnyEntry = (element, exists, cleanup) => {
+_state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
 	const checkOperation = () => {
 		if (settled) return false; settled = true;
@@ -554,7 +559,7 @@ _state.renameAnyEntry = (element, exists, cleanup) => {
 	const cleanupRename = (result) => {
 		element.contentEditable = false;
 		element.blur();
-		cleanup(result);
+		callback(result);
 	};
 	const confirmRename = () => {
 		window.getSelection().removeAllRanges();
@@ -563,7 +568,7 @@ _state.renameAnyEntry = (element, exists, cleanup) => {
 		/* check if the name is valid */
 		if (fileName.match(VALID_NAME_REGEX))
 			return cleanupRename(fileName);
-		_state.pushNotification(_state.makeStaticText(`[${fileName}] is not a valid name`, false));
+		_state.pushNotification(_state.makeStaticText(`[${fileName}] is not a valid name (No: \\ / ? : * " < > | )`, false));
 		return cleanupRename(null);
 	};
 
@@ -605,14 +610,14 @@ _state.renameAnyEntry = (element, exists, cleanup) => {
 		cleanupRename(null);
 	};
 }
-_state.createDirectory = (element, path, exists, cleanup) => {
+_state.createDirectory = (element, path, exists, callback) => {
 	element.innerText = 'New Directory';
 
 	return _state.renameAnyEntry(element, exists, (fileName) => {
 		if (fileName == null)
-			return cleanup(null);
+			return callback(null);
 
-		cleanup(new Promise((resolve, reject) => {
+		callback(new Promise((resolve, reject) => {
 			const [notification, update] = _state.makeDelayedStatus(`Create Directory: ${fileName}`);
 			const fadeOut = _state.pushNotification(notification);
 			update('Creating...', null);
