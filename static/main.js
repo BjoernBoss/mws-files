@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 Bjoern Boss Henrichsen */
 
 const REMOVE_NOTIFICATION_ANIMATION = 35;
-const FADE_NOTIFICATION_ANIMATION = 3500;
+const FADE_NOTIFICATION_ANIMATION = 3000;
 const TRANSITION_OVERLAY_ANIMATION = 40;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 150;
@@ -284,72 +284,169 @@ _state.updateOverlay = (name, notify) => {
 	}
 }
 _state.showEntryMenu = (entry) => {
-	/* initialize the menu list size */
+	let menuSize = 2, entryIndex = 2;
+	if (_state.config.modify)
+		menuSize += 3;
+	if (_state.config.delete)
+		menuSize += 1;
+	if (navigator?.clipboard != null)
+		++menuSize;
+
+	/* initialize the menu caption and list size */
 	const content = document.getElementById('menu-content');
-	_state.updateMenuLength(content, 7);
+	document.getElementById('menu-caption').classList.remove('hidden');
+	document.getElementById('menu-name').innerText = entry.name;
+	_state.updateMenuLength(content, menuSize);
 
-	/* update the texts and icons */
-	content.children[0].children[0].appendChild(_state.loadIcon('Download', 'download'));
-	content.children[0].children[1].innerText = 'Download';
-	content.children[1].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
-	content.children[1].children[1].innerText = 'Rename';
-	content.children[2].children[0].appendChild(_state.loadIcon('Copy', 'copy'));
-	content.children[2].children[1].innerText = 'Copy to...';
-	content.children[3].children[0].appendChild(_state.loadIcon('Move', 'move'));
-	content.children[3].children[1].innerText = 'Move to...';
-	content.children[4].children[0].appendChild(_state.loadIcon('Open', 'open'));
-	content.children[4].children[1].innerText = 'Open';
-	content.children[5].children[0].appendChild(_state.loadIcon('Clipboard', 'clipboard'));
-	content.children[5].children[1].innerText = 'Copy URL';
-	content.children[6].children[0].appendChild(_state.loadIcon('Delete', 'delete'));
-	content.children[6].children[1].innerText = 'Delete';
-	content.children[6].classList.add('delete');
-
-	/* show the actual menu */
+	/* helper method to ensure the entry is still valid */
 	let settled = false;
-	_state.updateOverlay('menu-overlay', () => { settled = true; });
-
-	/* wire up the corresponding click logic */
-	const resolveIndex = () => {
-		const index = _state.list.indexOf(entry);
-		if (index >= 0)
-			return index;
+	const validateEntry = (checkSettled) => {
+		if (checkSettled && settled) return false;
+		if (_state.list.indexOf(entry) >= 0)
+			return true;
 		_state.pushNotification(_state.makeStaticText(`[${entry.name}] does not exist anymore`, false));
-		return null;
+		if (!settled)
+			_state.updateOverlay('menu-overlay', null);
+		return false;
 	};
+
+	/* register the common menu options */
+	content.children[0].children[0].appendChild(_state.loadIcon('Open', 'open'));
+	content.children[0].children[1].innerText = 'Open';
+	content.children[0].onclick = () => {
+		if (validateEntry(true))
+			document.location = _state.buildPath(true, entry.name);
+	};
+	content.children[1].children[0].appendChild(_state.loadIcon('Download', 'download'));
+	content.children[1].children[1].innerText = 'Download';
 	content.children[1].onclick = () => {
-		if (settled) return;
+		if (!validateEntry(true)) return;
 		_state.updateOverlay('menu-overlay', null);
+		console.log('Download!');
+	};
 
-		const index = resolveIndex();
-		if (index == null) return;
+	/* register the copy-url interaction */
+	if (navigator?.clipboard != null) {
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Clipboard', 'clipboard'));
+		content.children[entryIndex].children[1].innerText = 'Copy URL';
+		content.children[entryIndex++].onclick = () => {
+			if (!validateEntry(true)) return;
+			_state.updateOverlay('menu-overlay', null);
+			navigator.clipboard.writeText(new URL(_state.buildPath(true, entry.name), document.location).href)
+				.then(() => {
+					const fadeOut = _state.pushNotification(_state.makeStaticText('Copied to Clipboard!', true));
+					fadeOut();
+				})
+				.catch(() => _state.pushNotification(_state.makeStaticText('Failed writing to clipboard', false)));
+		};
+	}
 
-		/* start renaming the element */
-		_state.renameAnyEntry(entry.html.name, () => (resolveIndex() != null),
-			(fileName) => {
+	/* register the modification interactions */
+	if (_state.config.modify) {
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
+		content.children[entryIndex].children[1].innerText = 'Rename';
+		content.children[entryIndex++].onclick = () => {
+			if (!validateEntry(true)) return;
+			_state.updateOverlay('menu-overlay', null);
+
+			/* start renaming the element */
+			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), (fileName) => {
 				entry.html.name.innerText = entry.name;
 				if (fileName != null)
 					console.log(`Rename [${_state.buildPath(true, entry.name)}] to [${fileName}]`);
 			});
-	};
-	content.children[2].onclick = () => _state.showMoveCopyPicker(entry, false);
-	content.children[3].onclick = () => _state.showMoveCopyPicker(entry, true);
+		};
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Copy', 'copy'));
+		content.children[entryIndex].children[1].innerText = 'Copy to...';
+		content.children[entryIndex++].onclick = () => {
+			if (!validateEntry(true)) return;
+			_state.updateOverlay('menu-overlay', null);
+			_state.showMoveCopyPicker(false, (path) => {
+				if (!validateEntry(false)) return;
+				if (path != _state.config.basePath)
+					return console.log(`Copy [${_state.buildPath(true, entry.name)}] to: ${path}`);
+
+				/* find the temporary name to be used */
+				let tempName = entry.name;
+				for (let tested = 0; tested < _state.list.length;) {
+					tempName += ' - Copy', tested = 0;
+					while (tested < _state.list.length && _state.list[tested].name != tempName)
+						++tested;
+				}
+
+				/* for an in-place copy, create a new temporary entry to be renamed */
+				const fakeEntry = _state.createListEntry({ name: tempName, kind: entry.kind }, false);
+				const host = document.getElementById('content');
+				host.insertBefore(fakeEntry.html.row, host.children[0]);
+				fakeEntry.html.row.scrollIntoView();
+				++_state.fakeEntries;
+				_state.updateList(null);
+
+				/* start editing the new element */
+				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
+					fakeEntry.html.row.remove();
+					--_state.fakeEntries;
+					_state.updateList(null);
+
+					if (fileName != null && validateEntry(false))
+						return console.log(`Copy [${_state.buildPath(true, entry.name)}] to: ${_state.buildPath(true, fileName)}`);
+				});
+			});
+		};
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Move', 'move'));
+		content.children[entryIndex].children[1].innerText = 'Move to...';
+		content.children[entryIndex++].onclick = () => {
+			if (!validateEntry(true)) return;
+			_state.updateOverlay('menu-overlay', null);
+			_state.showMoveCopyPicker(true, (path) => {
+				if (validateEntry(false))
+					console.log(`Move [${_state.buildPath(true, entry.name)}] to: ${path}`);
+			});
+		};
+	}
+
+	/* register the delete interaction */
+	if (_state.config.delete) {
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Delete', 'delete'));
+		content.children[entryIndex].children[1].innerText = 'Delete';
+		content.children[entryIndex].classList.add('delete');
+		content.children[entryIndex++].onclick = () => {
+			if (!validateEntry(true)) return;
+			_state.updateOverlay('menu-overlay', null);
+			console.log('delete');
+		};
+	}
+
+	/* show the actual menu */
+	_state.updateOverlay('menu-overlay', () => { settled = true; });
 }
 _state.showCreateMenu = () => {
 	if (!_state.config.upload)
 		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
 
-	/* initialize the menu list size */
+	/* initialize the menu caption and list size */
 	const content = document.getElementById('menu-content');
+	document.getElementById('menu-caption').classList.add('hidden');
 	_state.updateMenuLength(content, 3);
 
 	/* update the texts and icons */
 	content.children[0].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
 	content.children[0].children[1].innerText = 'Create Directory';
 	content.children[1].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
-	content.children[1].children[1].innerText = 'Upload Files';
 	content.children[2].children[0].appendChild(_state.loadIcon('UploadFile', 'upload'));
-	content.children[2].children[1].innerText = 'Upload Directory';
+	const row0 = buildElement();
+	row0.appendChild(buildElement({ text: 'Upload Files' }));
+	content.children[1].children[1].replaceChildren(row0);
+	const row1 = buildElement();
+	row1.appendChild(buildElement({ text: 'Upload Directory' }));
+	content.children[2].children[1].replaceChildren(row1);
+
+	/* add the size marker */
+	if (_state.config.maxUploadSize != null) {
+		const text = `Max. ${_state.formatSize(_state.config.maxUploadSize)}`;
+		row0.appendChild(buildElement({ class: 'detail', text }));
+		row1.appendChild(buildElement({ class: 'detail', text }));
+	}
 
 	/* show the actual menu */
 	let settled = false;
@@ -361,7 +458,7 @@ _state.showCreateMenu = () => {
 		_state.updateOverlay('menu-overlay', null);
 
 		/* create the new fake list to be edited */
-		const entry = _state.createListEntry({ name: 'New Directory', kind: 'directory' }, false);
+		const entry = _state.createListEntry({ name: '', kind: 'directory' }, false);
 		const host = document.getElementById('content');
 		host.insertBefore(entry.html.row, host.children[0]);
 		entry.html.row.scrollIntoView();
@@ -369,7 +466,7 @@ _state.showCreateMenu = () => {
 		_state.updateList(null);
 
 		/* start editing the new element */
-		_state.createDirectory(entry.html.name, _state.config.basePath, () => true, (promise) => {
+		_state.createDirectory(entry.html.name, _state.config.basePath, (promise) => {
 			entry.html.row.remove();
 			--_state.fakeEntries;
 			_state.updateList(null);
@@ -406,9 +503,9 @@ _state.showCreateMenu = () => {
 		input.click();
 	};
 }
-_state.showMoveCopyPicker = (entry, move) => {
-	if (!_state.config.upload)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+_state.showMoveCopyPicker = (move, callback) => {
+	if (!_state.config.modify)
+		return _state.pushNotification(_state.makeStaticText('Not allowed to modify content', false));
 
 	/* show the menu navigation and configure the confirm button */
 	const navigation = document.getElementById('pick-navigation');
@@ -418,9 +515,9 @@ _state.showMoveCopyPicker = (entry, move) => {
 
 	/* construct the map of already fetched directories (cache them) */
 	const baseList = [];
-	for (const entry of _state.list) {
-		if (entry.kind == 'directory')
-			baseList.push(entry.name);
+	for (const temp of _state.list) {
+		if (temp.kind == 'directory')
+			baseList.push(temp.name);
 	}
 	const fetched = { [_state.config.basePath]: baseList.sort() };
 
@@ -485,6 +582,11 @@ _state.showMoveCopyPicker = (entry, move) => {
 			confirm.classList.add('disabled');
 		else
 			confirm.classList.remove('disabled');
+		confirm.onclick = () => {
+			if (settled) return;
+			_state.updateOverlay('pick-overlay', null);
+			callback(path);
+		};
 
 		/* construct the actual entries */
 		_state.updateMenuLength(content, directories.length);
@@ -513,16 +615,16 @@ _state.showMoveCopyPicker = (entry, move) => {
 				return;
 
 			/* create the temporary fake entry to be used for the renaming */
-			const entry = content.insertBefore(_state.createMenuEntry(), content.children[0] ?? null);
-			entry.children[0].appendChild(_state.loadIcon('Directory', 'directory'));
-			entry.children[1].classList.add('path');
-			entry.scrollIntoView();
+			const fakeEntry = content.insertBefore(_state.createMenuEntry(), content.children[0] ?? null);
+			fakeEntry.children[0].appendChild(_state.loadIcon('Directory', 'directory'));
+			fakeEntry.children[1].classList.add('path');
+			fakeEntry.scrollIntoView();
 			document.getElementById('pick-content-empty').classList.add('hidden');
 
 			/* try to create the actual directory (cannot have a busy-timer, if the
 			*	promise is valid, as this implies that no cancel-task was called) */
-			cancelTask = _state.createDirectory(entry.children[1], path, () => true, (promise) => {
-				entry.remove();
+			cancelTask = _state.createDirectory(fakeEntry.children[1], path, (promise) => {
+				fakeEntry.remove();
 				if (promise == null || settled)
 					return;
 				markAsBusy();
@@ -610,10 +712,10 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		cleanupRename(null);
 	};
 }
-_state.createDirectory = (element, path, exists, callback) => {
+_state.createDirectory = (element, path, callback) => {
 	element.innerText = 'New Directory';
 
-	return _state.renameAnyEntry(element, exists, (fileName) => {
+	return _state.renameAnyEntry(element, () => true, (fileName) => {
 		if (fileName == null)
 			return callback(null);
 
@@ -669,7 +771,7 @@ _state.uploadFile = (file, fileName, fileSize) => {
 }
 _state.removeFile = (name) => {
 	if (!_state.config.delete)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to remove content', false));
+		return _state.pushNotification(_state.makeStaticText('Not allowed to delete content', false));
 	console.log(`confirming removing [${name}]...`);
 	document.getElementById('remove-name').innerText = name;
 
@@ -699,11 +801,11 @@ _state.removeFile = (name) => {
 	};
 }
 
-_state.createListEntry = (params, path) => {
+_state.createListEntry = (params, links) => {
 	const row = buildElement({ class: 'row button' });
 
-	const entry = row.appendChild(buildElement({ kind: (path ? 'a' : 'div'), class: 'entry' }));
-	if (path)
+	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
+	if (links)
 		entry.href = _state.buildPath(true, params.name);
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
@@ -793,6 +895,7 @@ _state.updateList = (content) => {
 
 window.onload = () => {
 	/* parse the initial configuration */
+	_state.config.modify = (__LOAD_PARAMS__?.modify ?? false);
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
 	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
 	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
@@ -850,10 +953,8 @@ window.onload = () => {
 
 		/* update the drop animations and add the size constraints */
 		dropZone.style.setProperty('--drop-zone-animations', `${DROP_ZONE_ANIMATION}ms`);
-		if (_state.config.maxUploadSize != null) {
-			const text = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
-			document.getElementById('drop-detail').innerHTML = text;
-		}
+		if (_state.config.maxUploadSize != null)
+			document.getElementById('drop-detail').innerText = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
 
 		/* show and wire up the create button */
 		document.getElementById('create-wrap').classList.remove('hidden');
