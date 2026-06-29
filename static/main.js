@@ -746,6 +746,97 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		cleanupRename(null);
 	};
 }
+_state.createListEntry = (params, links) => {
+	const row = buildElement({ class: 'row button' });
+
+	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
+	if (links)
+		entry.href = _state.makePath(true, true, params.name);
+
+	const icon = entry.appendChild(buildElement({ class: 'icon' }));
+	if (params.kind == 'directory')
+		icon.appendChild(_state.loadIcon('Directory', 'directory'))
+	else
+		icon.appendChild(_state.loadIcon('File', 'file'))
+
+	const details = entry.appendChild(buildElement({ class: 'details' }));
+	const name = details.appendChild(buildElement({ class: 'name', text: params.name }));
+	const info = details.appendChild(buildElement({ class: 'info' }));
+	const size = info.appendChild(buildElement({ text: '-' }));
+	const date = info.appendChild(buildElement({ text: '-' }));
+	const menu = row.appendChild(buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') }));
+
+	return { ...params, html: { row, name, size, date, menu } };
+}
+_state.updateList = (content) => {
+	const host = document.getElementById('content');
+
+	/* sort the content according to the presentation order */
+	const compare = (a, b) => {
+		if (a.kind != b.kind)
+			return (a.kind == 'directory' ? -1 : 1);
+		return (a.name < b.name ? -1 : (a.name == b.name ? 0 : 1));
+	};
+	if (content != null)
+		content.sort(compare);
+
+	/* iterate over the current list and content list, and synchronize them */
+	let prev = 0, next = 0;
+	if (content != null) while (true) {
+		const hasPrev = (prev < _state.list.length), hasNext = (next < content.length);
+		if (!hasPrev && !hasNext)
+			break;
+		const cmp = (hasNext ? (hasPrev ? compare(_state.list[prev], content[next]) : 1) : -1);
+
+		/* check if an entry needs to be removed (remove from list before removing from tree to ensure 'onblur' can detect the removal) */
+		if (cmp < 0) {
+			const row = _state.list.splice(prev, 1)[0].html.row;
+			host.removeChild(row);
+			continue;
+		}
+
+		/* check if an entry needs to be added */
+		let entry = null;
+		if (cmp > 0) {
+			entry = _state.createListEntry(content[next], true);
+			host.insertBefore(entry.html.row, (hasPrev ? _state.list[prev].html.row : null));
+			_state.list.splice(prev, 0, entry);
+		}
+		else {
+			entry = _state.list[prev];
+			entry.size = content[next].size;
+			entry.modified = content[next].modified;
+		}
+
+		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
+		if (content[next].kind == 'directory')
+			entry.html.size.innerText = `${content[next].size} Items`;
+		else
+			entry.html.size.innerText = `${_state.formatSize(content[next].size)}`;
+		if (content[next].modified == 0)
+			entry.html.date.innerText = '-';
+		else {
+			const date = new Date(content[next].modified);
+			entry.html.date.innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
+		}
+
+		/* patch the menu button and right click */
+		entry.html.menu.onclick = () => _state.showEntryMenu(entry);
+		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
+		entry.html.row.oncontextmenu = (e) => {
+			e.preventDefault();
+			_state.showEntryMenu(entry);
+		};
+		++next, ++prev;
+	}
+
+	/* check if the list is empty and add the placeholder */
+	if (_state.list.length == 0 && _state.fakeEntries == 0)
+		document.getElementById('content-empty').classList.remove('hidden');
+	else
+		document.getElementById('content-empty').classList.add('hidden');
+	console.log(`content list has been updated to ${_state.list.length + _state.fakeEntries} entries...`);
+}
 
 _state.createDirectory = (element, path, callback) => {
 	element.innerText = 'New Directory';
@@ -918,98 +1009,6 @@ _state.uploadFile = (file, fileName, fileSize) => {
 	};
 	xhr.onerror = () => update('Network error', false);
 	xhr.send(file);
-}
-
-_state.createListEntry = (params, links) => {
-	const row = buildElement({ class: 'row button' });
-
-	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
-	if (links)
-		entry.href = _state.makePath(true, true, params.name);
-
-	const icon = entry.appendChild(buildElement({ class: 'icon' }));
-	if (params.kind == 'directory')
-		icon.appendChild(_state.loadIcon('Directory', 'directory'))
-	else
-		icon.appendChild(_state.loadIcon('File', 'file'))
-
-	const details = entry.appendChild(buildElement({ class: 'details' }));
-	const name = details.appendChild(buildElement({ class: 'name', text: params.name }));
-	const info = details.appendChild(buildElement({ class: 'info' }));
-	const size = info.appendChild(buildElement({ text: '-' }));
-	const date = info.appendChild(buildElement({ text: '-' }));
-	const menu = row.appendChild(buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') }));
-
-	return { ...params, html: { row, name, size, date, menu } };
-}
-_state.updateList = (content) => {
-	const host = document.getElementById('content');
-
-	/* sort the content according to the presentation order */
-	const compare = (a, b) => {
-		if (a.kind != b.kind)
-			return (a.kind == 'directory' ? -1 : 1);
-		return (a.name < b.name ? -1 : (a.name == b.name ? 0 : 1));
-	};
-	if (content != null)
-		content.sort(compare);
-
-	/* iterate over the current list and content list, and synchronize them */
-	let prev = 0, next = 0;
-	if (content != null) while (true) {
-		const hasPrev = (prev < _state.list.length), hasNext = (next < content.length);
-		if (!hasPrev && !hasNext)
-			break;
-		const cmp = (hasNext ? (hasPrev ? compare(_state.list[prev], content[next]) : 1) : -1);
-
-		/* check if an entry needs to be removed (remove from list before removing from tree to ensure 'onblur' can detect the removal) */
-		if (cmp < 0) {
-			const row = _state.list.splice(prev, 1)[0].html.row;
-			host.removeChild(row);
-			continue;
-		}
-
-		/* check if an entry needs to be added */
-		let entry = null;
-		if (cmp > 0) {
-			entry = _state.createListEntry(content[next], true);
-			host.insertBefore(entry.html.row, (hasPrev ? _state.list[prev].html.row : null));
-			_state.list.splice(prev, 0, entry);
-		}
-		else {
-			entry = _state.list[prev];
-			entry.size = content[next].size;
-			entry.modified = content[next].modified;
-		}
-
-		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
-		if (content[next].kind == 'directory')
-			entry.html.size.innerText = `${content[next].size} Items`;
-		else
-			entry.html.size.innerText = `${_state.formatSize(content[next].size)}`;
-		if (content[next].modified == 0)
-			entry.html.date.innerText = '-';
-		else {
-			const date = new Date(content[next].modified);
-			entry.html.date.innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
-		}
-
-		/* patch the menu button and right click */
-		entry.html.menu.onclick = () => _state.showEntryMenu(entry);
-		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
-		entry.html.row.oncontextmenu = (e) => {
-			e.preventDefault();
-			_state.showEntryMenu(entry);
-		};
-		++next, ++prev;
-	}
-
-	/* check if the list is empty and add the placeholder */
-	if (_state.list.length == 0 && _state.fakeEntries == 0)
-		document.getElementById('content-empty').classList.remove('hidden');
-	else
-		document.getElementById('content-empty').classList.add('hidden');
-	console.log(`content list has been updated to ${_state.list.length + _state.fakeEntries} entries...`);
 }
 
 window.onload = () => {
