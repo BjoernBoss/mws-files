@@ -315,7 +315,7 @@
 	align-self: center;
 	border-radius: 6px;
 	border: 1px solid #202020;
-	background-color: #f0f0f0;
+	background-color: #ffffff;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -331,7 +331,8 @@
 .dialog .name {
 	font-size: 1.2em;
 	font-family: monospace;
-	margin: 0 20px 20px;
+	margin: 10px 20px 30px;
+	word-break: break-word;
 }
 
 .dialog .confirm {
@@ -346,7 +347,7 @@
 	border-radius: 4px;
 	background-color: #ffffff;
 	border: 1px solid black;
-	padding: 1px 0px 3px;
+	padding: 5px 0px 6px;
 	box-shadow: 0 0 3px black;
 	display: flex;
 	align-items: center;
@@ -386,11 +387,11 @@
 }
 
 .menu.small {
-	min-width: min(calc(100% - 2em), 15em);
+	min-width: min(calc(100% - 2em), 20em);
 }
 
 .menu.large {
-	min-width: min(calc(100% - 2em), 45em);
+	min-width: min(calc(100% - 2em), 35em);
 }
 
 .menu .navigation .create {
@@ -500,10 +501,17 @@
 }
 
 .menu .option .icon {
-	padding-top: 9px;
-	padding-bottom: 7px;
+	padding-top: 3px;
 	min-width: 1.2em;
 	height: 100%;
+}
+
+.menu.large .option {
+	min-height: 1.8em;
+}
+
+.menu.large .option .icon {
+	padding-top: 0;
 }
 
 .menu .option.delete {
@@ -597,32 +605,58 @@
 	width: max-content;
 	overflow: hidden;
 	user-select: text;
+	font-size: 0.85em;
+	word-break: break-word;
 }
 
-.upload {
+.task {
 	font-family: monospace;
 	display: flex;
 	flex-direction: column;
-	align-items: end;
 	gap: 0.25em;
 }
 
-.upload .text {
-	font-size: 0.85em;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	overflow: hidden;
+.success {
+	color: #30a080;
+}
+
+.failure {
+	color: #b05050;
+}
+
+.task .info {
+	color: #0060c0;
+	align-self: end;
+}
+
+.task .text {
 	width: 100%;
 }
 
-.upload .status {
+.task .text.hidden {
+	display: none;
+}
+
+.task .progress {
 	display: flex;
 	align-items: center;
 	width: 100%;
 	max-width: max-content;
 }
 
-.upload .bar {
+.task .progress.hidden {
+	display: none;
+}
+
+.task .progress .digits {
+	min-width: 2.5em;
+	margin-left: 0.5em;
+	padding-right: 0.25em;
+	font-size: 0.9em;
+	text-align: end;
+}
+
+.task .progress .bar {
 	width: 120px;
 	height: 8px;
 	background: #d0d0d0;
@@ -630,23 +664,11 @@
 	overflow: hidden;
 }
 
-.upload .fill {
+.task .progress .fill {
 	height: 100%;
-	background: #0060c0;
+	background: currentColor;
 	transition: width 200ms;
 	width: 0%;
-}
-
-.upload .state {
-	color: #0060c0;
-	text-align: end;
-}
-
-.upload .progress {
-	width: 2.5em;
-	margin-left: 0.5em;
-	padding-right: 0.25em;
-	font-size: 0.9em;
 }
 
 .load-icon {

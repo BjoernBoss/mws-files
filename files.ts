@@ -191,7 +191,7 @@ export class FileShare extends mws.ModuleHandler {
 			language: 'en',
 			head: [
 				b.Meta('viewport', 'width=device-width, initial-scale=1'),
-				b.Title(`Directory ${title}`),
+				b.Title(`Directory: ${title}`),
 				b.Meta('Description', `Content of directory ${path}`),
 				b.LoadStyle(this.staticPath(client, '/style.css')),
 				b.LoadScript(this.staticPath(client, '/main.js')),

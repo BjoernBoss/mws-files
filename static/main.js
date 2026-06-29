@@ -2,12 +2,12 @@
 /* Copyright (c) 2026 Bjoern Boss Henrichsen */
 
 const REMOVE_NOTIFICATION_ANIMATION = 35;
+const TRANSITION_OVERLAY_ANIMATION = 30;
 const FADE_NOTIFICATION_ANIMATION = 3000;
-const TRANSITION_OVERLAY_ANIMATION = 40;
+const MAX_DELETE_FAILURES = 12;
+const FILE_OPERATION_BATCH_SIZE = 8;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 150;
-const COLOR_UI_SUCCESS = '#30a080';
-const COLOR_UI_ERROR = '#b05050';
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
 const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {} };
@@ -22,7 +22,34 @@ function buildElement(options) {
 		e.appendChild(options.child);
 	return e;
 }
+function buildPath(...paths) {
+	let out = '/';
+	for (const p of paths) {
+		if (out.endsWith('/'))
+			out += (p.startsWith('/') ? p.substring(1) : p);
+		else
+			out += (p.startsWith('/') ? p : `/${p}`);
+	}
+	return out;
+}
 
+_state.makePath = (root, base, ...paths) => {
+	const p0 = (root ? _state.config.rootPath : '/'), p1 = (base ? _state.config.basePath : '/');
+	return buildPath(p0, p1, ...paths);
+}
+_state.formatSize = (size) => {
+	for (const option of UNIT_PREFIX_LIST) {
+		if (size < option[0] && option[0] > 0)
+			continue;
+		if (option[1] == '')
+			return `${size} Bytes`;
+		size /= option[0];
+		if (size > 1000)
+			return `${Math.round(size)} ${option[1]}B`;
+		else
+			return `${(size).toPrecision(3)} ${option[1]}B`;
+	}
+}
 _state.loadIcon = (placeholder, name) => {
 	/* load the icons manually to ensure they are placed in-place and can be CSS modified */
 	const element = buildElement({ class: 'load-icon' });
@@ -101,78 +128,60 @@ _state.pushNotification = (body) => {
 			.onfinish = () => close.onclick();
 	};
 }
-_state.appendToPath = (...paths) => {
-	let out = '/';
-	for (const p of paths) {
-		if (out.endsWith('/'))
-			out += (p.startsWith('/') ? p.substring(1) : p);
-		else
-			out += (p.startsWith('/') ? p : `/${p}`);
-	}
-	return out;
-}
-_state.buildPath = (base, ...paths) => {
-	if (base)
-		return _state.appendToPath(_state.config.rootPath, _state.config.basePath, ...paths);
-	return _state.appendToPath(_state.config.rootPath, ...paths);
-}
-_state.formatSize = (size) => {
-	for (const option of UNIT_PREFIX_LIST) {
-		if (size < option[0] && option[0] > 0)
-			continue;
-		if (option[1] == '')
-			return `${size} Bytes`;
-		size /= option[0];
-		if (size > 1000)
-			return `${Math.round(size)} ${option[1]}B`;
-		else
-			return `${(size).toPrecision(3)} ${option[1]}B`;
-	}
-}
-_state.makeUploadProgress = (caption) => {
-	const upload = buildElement({ class: 'upload' });
+_state.pushTaskStatus = (caption) => {
+	const upload = buildElement({ class: 'task' });
 	upload.appendChild(buildElement({ class: 'text', text: caption }));
-	const htmlStatus = upload.appendChild(buildElement({ class: 'status' }));
+	const info = upload.appendChild(buildElement({ class: 'info' }));
 
-	const bar = htmlStatus.appendChild(buildElement({ class: 'bar' }));
+	const textDetail = info.appendChild(buildElement({ class: 'text', text: '...' }));
+	const progressDetail = info.appendChild(buildElement({ class: 'progress hidden' }));
+
+	const bar = progressDetail.appendChild(buildElement({ class: 'bar' }));
 	const fill = bar.appendChild(buildElement({ class: 'fill' }));
-	const textProgress = htmlStatus.appendChild(buildElement({ class: 'progress state', text: '0%' }));
+	const digits = progressDetail.appendChild(buildElement({ class: 'digits', text: '0%' }));
 
-	/* setup the callback to report progress and success/failure */
-	const callback = (detail, status) => {
-		if (status == null) {
-			const value = `${Math.round(detail * 100)}%`;
-			fill.style.width = value;
-			textProgress.innerText = value;
-			return;
+	/* create the actual notification and return the handler callback */
+	const fadeOut = _state.pushNotification(upload);
+	return (detail, status, total) => {
+		/* update the content visibility and the body */
+		if (typeof detail == 'number') {
+			textDetail.classList.add('hidden');
+			progressDetail.classList.remove('hidden');
+
+			if (total == null) {
+				const value = `${Math.round(detail * 100)}%`;
+				fill.style.width = value;
+				digits.innerText = value;
+			}
+			else {
+				fill.style.width = `${Math.round((detail * 100) / total)}%`;
+				digits.innerText = `${detail} / ${total}`;
+			}
+		}
+		else {
+			textDetail.classList.remove('hidden');
+			progressDetail.classList.add('hidden');
+
+			textDetail.innerText = detail;
 		}
 
-		htmlStatus.removeChild(bar);
-		textProgress.classList.remove('progress');
-		textProgress.classList.add('text');
-		textProgress.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
-		textProgress.innerHTML = detail;
+		/* update the colors and fading based on the status */
+		if (status == null)
+			return;
+		textDetail.classList.add(status ? 'success' : 'failure');
+		progressDetail.classList.add(status ? 'success' : 'failure');
+		if (status)
+			fadeOut();
 	};
-	return [upload, callback];
 }
-_state.makeDelayedStatus = (caption) => {
-	const upload = buildElement({ class: 'upload' });
-	const name = upload.appendChild(buildElement({ class: 'text', text: caption }));
-	const textStatus = upload.appendChild(buildElement({ class: 'text state', text: '...' }));
-
-	/* setup the callback to report progress and success/failure */
-	const callback = (detail, status) => {
-		textStatus.innerText = detail;
-		if (status != null)
-			textStatus.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
-	};
-	return [upload, callback];
-}
-_state.makeStaticText = (text, status) => {
+_state.pushStaticText = (text, status) => {
 	const element = buildElement({ text });
 	if (status != null)
-		element.style.color = (status ? COLOR_UI_SUCCESS : COLOR_UI_ERROR);
-	return element;
+		element.classList.add(status ? 'success' : 'failure');
+
+	const fadeOut = _state.pushNotification(element);
+	if (status)
+		fadeOut();
 }
 _state.makeLocation = (path, cb) => {
 	const kind = (cb == null ? 'a' : 'div');
@@ -183,7 +192,7 @@ _state.makeLocation = (path, cb) => {
 
 	/* update the logic for home */
 	if (cb == null)
-		home.href = _state.buildPath(false);
+		home.href = _state.makePath(true, false);
 	else if (path == '/')
 		home.classList.add('disabled');
 	else
@@ -200,7 +209,7 @@ _state.makeLocation = (path, cb) => {
 
 		/* wire up the button logic */
 		if (cb == null)
-			entry.href = _state.buildPath(false, path.substring(0, end));
+			entry.href = _state.makePath(true, false, path.substring(0, end));
 		else if (end < path.length)
 			entry.onclick = () => cb(path.substring(0, end));
 		else
@@ -306,7 +315,7 @@ _state.showEntryMenu = (entry) => {
 		if (checkSettled && settled) return false;
 		if (_state.list.indexOf(entry) >= 0)
 			return true;
-		_state.pushNotification(_state.makeStaticText(`[${entry.name}] does not exist anymore`, false));
+		_state.pushStaticText(`[${entry.name}] does not exist anymore`, false);
 		if (!settled)
 			_state.updateOverlay('menu-overlay', null);
 		return false;
@@ -317,7 +326,7 @@ _state.showEntryMenu = (entry) => {
 	content.children[0].children[1].innerText = 'Open';
 	content.children[0].onclick = () => {
 		if (validateEntry(true))
-			document.location = _state.buildPath(true, entry.name);
+			document.location = _state.makePath(true, true, entry.name);
 	};
 	content.children[1].children[0].appendChild(_state.loadIcon('Download', 'download'));
 	content.children[1].children[1].innerText = 'Download';
@@ -334,12 +343,9 @@ _state.showEntryMenu = (entry) => {
 		content.children[entryIndex++].onclick = () => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			navigator.clipboard.writeText(new URL(_state.buildPath(true, entry.name), document.location).href)
-				.then(() => {
-					const fadeOut = _state.pushNotification(_state.makeStaticText('Copied to Clipboard!', true));
-					fadeOut();
-				})
-				.catch(() => _state.pushNotification(_state.makeStaticText('Failed writing to clipboard', false)));
+			navigator.clipboard.writeText(new URL(_state.makePath(true, true, entry.name), document.location).href)
+				.then(() => _state.pushStaticText('Copied to Clipboard!', true))
+				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
 		};
 	}
 
@@ -355,7 +361,7 @@ _state.showEntryMenu = (entry) => {
 			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), (fileName) => {
 				entry.html.name.innerText = entry.name;
 				if (fileName != null && fileName != entry.name)
-					console.log(`Rename [${_state.buildPath(true, entry.name)}] to [${fileName}]`);
+					console.log(`Rename [${_state.makePath(false, true, entry.name)}] to [${fileName}]`);
 			});
 		};
 	}
@@ -368,7 +374,7 @@ _state.showEntryMenu = (entry) => {
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
 				if (path != _state.config.basePath)
-					return console.log(`Copy [${_state.buildPath(true, entry.name)}] to: ${path}`);
+					return console.log(`Copy [${_state.makePath(false, true, entry.name)}] to: ${path}`);
 
 				/* find the temporary name to be used */
 				let tempName = '';
@@ -393,7 +399,7 @@ _state.showEntryMenu = (entry) => {
 					_state.updateList(null);
 
 					if (fileName != null && validateEntry(false))
-						return console.log(`Copy [${_state.buildPath(true, entry.name)}] to: ${_state.buildPath(true, fileName)}`);
+						return console.log(`Copy [${_state.makePath(false, true, entry.name)}] to: ${_state.makePath(false, true, fileName)}`);
 				});
 			});
 		};
@@ -406,7 +412,7 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(true, (path) => {
 				if (validateEntry(false))
-					console.log(`Move [${_state.buildPath(true, entry.name)}] to: ${path}`);
+					console.log(`Move [${_state.makePath(false, true, entry.name)}] to: ${path}`);
 			});
 		};
 	}
@@ -419,7 +425,12 @@ _state.showEntryMenu = (entry) => {
 		content.children[entryIndex++].onclick = () => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			console.log('delete');
+
+			/* ask the user if the deletion should actually be performed */
+			_state.showDeleteConfirm(entry.name, () => {
+				if (validateEntry(false))
+					_state.removeContent(entry.name, (entry.kind == 'directory'));
+			});
 		};
 	}
 
@@ -428,7 +439,7 @@ _state.showEntryMenu = (entry) => {
 }
 _state.showCreateMenu = () => {
 	if (!_state.config.upload)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+		return _state.pushStaticText('Not allowed to upload content', false);
 
 	/* initialize the menu caption and list size */
 	const content = document.getElementById('menu-content');
@@ -512,7 +523,7 @@ _state.showCreateMenu = () => {
 }
 _state.showMoveCopyPicker = (move, callback) => {
 	if (move ? (!_state.config.upload || !_state.config.delete) : (!_state.config.upload))
-		return _state.pushNotification(_state.makeStaticText(`Not allowed to ${move ? 'move' : 'copy'} content`, false));
+		return _state.pushStaticText(`Not allowed to ${move ? 'move' : 'copy'} content`, false);
 
 	/* show the menu navigation and configure the confirm button */
 	const navigation = document.getElementById('pick-navigation');
@@ -532,7 +543,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	let settled = false, busyTimer = null, cancelTask = () => { };
 	const failFetch = (msg) => {
 		if (settled) return;
-		_state.pushNotification(_state.makeStaticText(msg, false));
+		_state.pushStaticText(msg, false);
 		_state.updateOverlay('pick-overlay', null);
 	};
 	const markAsBusy = () => {
@@ -556,12 +567,12 @@ _state.showMoveCopyPicker = (move, callback) => {
 		markAsBusy();
 
 		/* fetch the directory state from the server */
-		fetch(`${_state.buildPath(false, target)}?raw=true`)
+		fetch(`${_state.makePath(true, false, target)}?raw=true`)
 			.then((resp) => {
 				if (settled) return;
 
 				if (!resp.ok)
-					return failFetch(`Error reading directory: ${resp.statusText}`);
+					return failFetch(`Error reading directory:\n${resp.statusText}`);
 				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
 					return failFetch('Unexpected server response');
 				resp.json().then((content) => {
@@ -601,7 +612,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 			content.children[i].children[0].appendChild(_state.loadIcon('Directory', 'directory'));
 			content.children[i].children[1].classList.add('path');
 			content.children[i].children[1].innerText = directories[i];
-			content.children[i].onclick = () => navigateDirectories(_state.appendToPath(path, directories[i]));
+			content.children[i].onclick = () => navigateDirectories(buildPath(path, directories[i]));
 		}
 
 		/* check if the directory is empty */
@@ -663,7 +674,18 @@ _state.showMoveCopyPicker = (move, callback) => {
 		clearBusy();
 	});
 }
+_state.showDeleteConfirm = (name, callback) => {
+	document.getElementById('remove-name').innerText = _state.makePath(false, true, name);
 
+	let settled = false;
+	document.getElementById('remove-confirm').onclick = () => {
+		if (settled) return;
+		_state.updateOverlay('remove-overlay', null);
+		callback();
+	};
+
+	_state.updateOverlay('remove-overlay', () => { settled = true; });
+}
 _state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
 	const checkOperation = () => {
@@ -682,7 +704,7 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		/* check if the name is valid */
 		if (fileName.match(VALID_NAME_REGEX))
 			return cleanupRename(fileName);
-		_state.pushNotification(_state.makeStaticText(`[${fileName}] is not a valid name (No: \\ / ? : * " < > | )`, false));
+		_state.pushStaticText(`[${fileName}] is not a valid name (No: \\ / ? : * " < > | )`, false);
 		return cleanupRename(null);
 	};
 
@@ -724,6 +746,7 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		cleanupRename(null);
 	};
 }
+
 _state.createDirectory = (element, path, callback) => {
 	element.innerText = 'New Directory';
 
@@ -732,17 +755,15 @@ _state.createDirectory = (element, path, callback) => {
 			return callback(null);
 
 		callback(new Promise((resolve, reject) => {
-			const [notification, update] = _state.makeDelayedStatus(`Create Directory: ${fileName}`);
-			const fadeOut = _state.pushNotification(notification);
+			const update = _state.pushTaskStatus(`Create Directory: ${fileName}`);
 			update('Creating...', null);
-			fetch(_state.buildPath(false, path, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
+			fetch(_state.makePath(true, false, path, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
 				.then((resp) => {
 					if (!resp.ok) {
 						update(`Error: ${resp.statusText}`, false);
 						return reject();
 					}
 					update('Created!', true);
-					fadeOut();
 					resolve(fileName);
 				})
 				.catch(() => {
@@ -752,14 +773,132 @@ _state.createDirectory = (element, path, callback) => {
 		}));
 	});
 }
+_state.removeContent = async (name, directory) => {
+	if (!_state.config.delete)
+		return _state.pushStaticText('Not allowed to delete content', false);
+	console.log(`Removing [${_state.makePath(false, true, name)}]...`);
+
+	/* setup the notification */
+	const totalUpdate = _state.pushTaskStatus(`Remove: ${name}`);
+	totalUpdate('Calculating...', null);
+
+	/* failure helper for the initialization phase */
+	let initFailed = false;
+	const handleError = (msg) => {
+		if (!initFailed)
+			totalUpdate(msg, false);
+		initFailed = true;
+	};
+
+	/* recursively collect the list of all files and directories to be removed */
+	const totalList = [];
+	if (directory) {
+		const fetchAndUpdate = async (path) => {
+			if (initFailed) return;
+
+			/* fetch the content list */
+			let response = null, content = null;
+			try {
+				response = await fetch(`${_state.makePath(true, false, path)}?raw=true`);
+				if (!response.ok)
+					return handleError(`Error reading [${path}]: ${response.statusText}`);
+			}
+			catch (_) {
+				return handleError('Network error');
+			}
+
+			/* parse the content list */
+			if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
+				return handleError('Unexpected server response');
+			try { content = await response.json() }
+			catch (_) {
+				return handleError('Malformed server response');
+			}
+
+			/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
+			const promises = [], children = [];
+			for (const name in content) {
+				if (initFailed) return;
+
+				const childPath = buildPath(path, name);
+				if (content[name].kind == 'file') {
+					children.push(totalList.length);
+					totalList.push({ path: childPath, kind: 'file' });
+				}
+				else
+					promises.push(fetchAndUpdate(childPath));
+			}
+
+			/* await the children and then push itself onto the list (with the indices of all children) */
+			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
+			return totalList.length - 1;
+		};
+		await fetchAndUpdate(_state.makePath(false, true, name));
+		if (initFailed)
+			return;
+	}
+	else
+		totalList.push({ path: _state.makePath(false, true, name), kind: 'file' });
+	totalUpdate(0, null, totalList.length);
+
+	/* iterate over the list and remove the content */
+	let batched = [], totalSuccess = 0, totalPerformed = 0, deleteFailed = false;
+	for (let i = 0; i < totalList.length; ++i) {
+		let entry = totalList[i], resolver = null;
+		entry.promise = new Promise((res) => resolver = res);
+
+		batched.push((async () => {
+			/* check if this is a directory, in which case all of its children
+			*	need to be awaited, to ensure they have been properly deleted */
+			if (entry.kind == 'directory') {
+				for (const index of entry.children)
+					await totalList[index].promise;
+			}
+
+			/* try to perform the actual deletion */
+			if (deleteFailed)
+				return resolver();
+			try {
+				const response = await fetch(`${_state.makePath(true, false, entry.path)}?kind=${entry.kind}`, { method: 'DELETE' });
+				if (response.ok)
+					++totalSuccess;
+				else
+					_state.pushStaticText(`Failed to delete [${entry.path}]:\n${response.statusText}`, false);
+			}
+			catch (_) { _state.pushStaticText(`Failed to delete [${entry.path}]:\nNetwork error`, false); }
+
+			/* mark this fetch as completed */
+			totalUpdate(++totalPerformed, null, totalList.length);
+			deleteFailed = (deleteFailed || (totalPerformed - totalSuccess > MAX_DELETE_FAILURES));
+			resolver();
+		})());
+
+		/* check if the batch should be awaited again and if the operation has failed */
+		if (i + 1 < totalList.length && (i + 1) % FILE_OPERATION_BATCH_SIZE != 0 && !deleteFailed)
+			continue;
+		await Promise.all(batched);
+		batched = [];
+		if (deleteFailed)
+			break;
+	}
+
+	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created) */
+	if (deleteFailed)
+		totalUpdate(`Aborted due to too many failed deletions (${totalPerformed - totalSuccess} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
+	else if (totalSuccess < totalPerformed)
+		totalUpdate(`Failed to delete ${totalPerformed - totalSuccess} out of ${totalList.length}`, false);
+	else {
+		_state.updateList(_state.list.filter((entry) => entry.name != name));
+		totalUpdate('Successfully removed!', true);
+	}
+}
 
 _state.uploadFile = (file, fileName, fileSize) => {
 	if (!_state.config.upload)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to upload content', false));
+		return _state.pushStaticText('Not allowed to upload content', false);
 	console.log(`uploading [${fileName}] of size [${fileSize}]...`);
 
-	const [element, update] = _state.makeUploadProgress(`Upload: ${fileName}`);
-	const fadeOut = _state.pushNotification(element);
+	const update = _state.pushTaskStatus(`Upload: ${fileName}`);
 	if (fileSize > _state.config.maxUploadSize)
 		return update(`Too large [${_state.formatSize(fileSize)}]`, false);
 	update(0, null);
@@ -776,41 +915,9 @@ _state.uploadFile = (file, fileName, fileSize) => {
 		/* add the entry preemtively to the list (ensure that a new list is created) */
 		_state.updateList(_state.list.concat([{ name: fileName, kind: 'file', size: fileSize, modified: 0 }]));
 		update('Uploaded!', true);
-		fadeOut();
 	};
 	xhr.onerror = () => update('Network error', false);
 	xhr.send(file);
-}
-_state.removeFile = (name) => {
-	if (!_state.config.delete)
-		return _state.pushNotification(_state.makeStaticText('Not allowed to delete content', false));
-	console.log(`confirming removing [${name}]...`);
-	document.getElementById('remove-name').innerText = name;
-
-	let settled = false;
-	_state.updateOverlay('remove-overlay', () => { settled = true; });
-
-	document.getElementById('remove-confirm').onclick = () => {
-		if (settled) return;
-		console.log(`removing [${name}]...`);
-		_state.updateOverlay('remove-overlay', null);
-
-		const [element, update] = _state.makeDelayedStatus(`Remove: ${name}`);
-		const fadeOut = _state.pushNotification(element);
-		update('Removing...', null);
-
-		fetch(_state.buildPath(true, encodeURIComponent(name)), { method: 'DELETE' })
-			.then((resp) => {
-				if (!resp.ok)
-					return update(`Error: ${resp.statusText}`, false);
-
-				/* remove the entry preemptively from the list (ensure that a new list is created) */
-				_state.updateList(_state.list.filter((entry) => entry.name != name));
-				update(`Removed!`, true)
-				fadeOut();
-			})
-			.catch(() => update('Network error', false));
-	};
 }
 
 _state.createListEntry = (params, links) => {
@@ -818,7 +925,7 @@ _state.createListEntry = (params, links) => {
 
 	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
 	if (links)
-		entry.href = _state.buildPath(true, params.name);
+		entry.href = _state.makePath(true, true, params.name);
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
 	if (params.kind == 'directory')
@@ -926,7 +1033,7 @@ window.onload = () => {
 	if (_state.config.basePath == '/')
 		document.getElementById('button-parent').classList.add('disabled');
 	else
-		document.getElementById('button-parent').href = _state.buildPath(false, _state.config.basePath.substring(0, _state.config.basePath.lastIndexOf('/')));
+		document.getElementById('button-parent').href = _state.makePath(true, false, _state.config.basePath.substring(0, _state.config.basePath.lastIndexOf('/')));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
