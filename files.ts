@@ -77,7 +77,7 @@ export class FileShare extends mws.ModuleHandler {
 	private async handleUpload(client: mws.ClientRequest, filePath: string): Promise<void> {
 		const kind = client.url.searchParams.get('kind') ?? 'file';
 		if (kind != 'file' && kind != 'directory')
-			return client.respondBadRequest(`Unsupported kind [${kind}] encountered`);
+			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
 
 		try {
 			/* check if a directory is to be created */
@@ -88,12 +88,12 @@ export class FileShare extends mws.ModuleHandler {
 
 			/* try to upload the file */
 			else if (!await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true }))
-				return client.respondConflict(`Path already exists`);
+				return client.respondConflict({ message: `Path already exists` });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
 			if (err.code == 'ENOENT')
-				return client.respondBadRequest(`Path for ${kind} does not exist`);
+				return client.respondNotFound();
 			if (err.code != 'EEXIST')
 				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err}`);
 
@@ -105,13 +105,13 @@ export class FileShare extends mws.ModuleHandler {
 				}
 				catch (err: any) { }
 			}
-			return client.respondConflict(`Path already exists`);
+			return client.respondConflict({ message: `Path already exists` });
 		}
 	}
 	private async handleDelete(client: mws.ClientRequest, filePath: string): Promise<void> {
 		const kind = client.url.searchParams.get('kind') ?? 'file';
 		if (kind != 'file' && kind != 'directory')
-			return client.respondBadRequest(`Unsupported kind [${kind}] encountered`);
+			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
 
 		/* try to remove the object */
 		try {
@@ -123,7 +123,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		catch (err: any) {
 			if (kind == 'directory' && err.code == 'ENOTEMPTY')
-				return client.respondConflict('Directory not empty');
+				return client.respondConflict({ message: 'Directory not empty' });
 
 			/* check if its a kind mis-match */
 			try {
@@ -131,7 +131,7 @@ export class FileShare extends mws.ModuleHandler {
 				if (!stats.isFile() && !stats.isDirectory())
 					this.warning(`Unsupported file-system object encountered: ${filePath}`);
 				if (!(kind == 'directory' ? stats.isDirectory() : stats.isFile()))
-					return client.respondConflict(`Path is not a ${kind}`);
+					return client.respondConflict({ message: `Path is not a ${kind}` });
 			}
 			catch (_err: any) {
 				if (_err.code == 'ENOENT')
@@ -325,7 +325,7 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if the method is allowed for the given endpoint */
 		if (relativePath == '/' && method != 'GET')
-			return client.respondForbidden('Root cannot be modified', { forwardReason: true });
+			return client.respondForbidden({ message: 'Root cannot be modified' });
 
 		/* check if the entry is to be deleted or uploaded */
 		if (method == 'DELETE')
@@ -334,13 +334,13 @@ export class FileShare extends mws.ModuleHandler {
 			return this.handleUpload(client, filePath);
 
 		try {
-			const kind = client.url.searchParams.get('kind') ?? 'file';
+			const kind = client.url.searchParams.get('kind');
 			const stats = await libFsPromises.stat(filePath);
 
 			/* check if a file is to be served */
 			if (stats.isFile()) {
 				if (kind != null && kind != 'file')
-					return client.respondConflict(`Path is not a file`);
+					return client.respondConflict({ message: `Path is not a file` });
 				if (!await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'Kind': 'file' } }))
 					client.respondNotFound();
 				return;
@@ -354,7 +354,7 @@ export class FileShare extends mws.ModuleHandler {
 
 			/* validate the requested kind and fetch the actual list */
 			if (kind != null && kind != 'directory')
-				return client.respondConflict(`Path is not a directory`);
+				return client.respondConflict({ message: `Path is not a directory` });
 			const list = await this.fetchDirectoryList(filePath);
 
 			/* check if the directory should be served in raw */

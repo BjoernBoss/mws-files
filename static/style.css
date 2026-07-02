@@ -258,7 +258,7 @@
 .drop-zone {
 	border: 2px dashed #0060b0;
 	border-radius: 8px;
-	background-color: #e0f0ff;
+	background-color: #e0f0ffc0;
 	padding: 0.5em;
 	text-align: center;
 	white-space: nowrap;

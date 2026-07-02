@@ -5,7 +5,7 @@ const REMOVE_NOTIFICATION_ANIMATION = 35;
 const TRANSITION_OVERLAY_ANIMATION = 30;
 const FADE_NOTIFICATION_ANIMATION = 3000;
 const FILE_MAX_FAILURES = 12;
-const FILE_OPERATION_BATCH_SIZE = 8;
+const FILE_OPERATION_BATCH_SIZE = 4;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
@@ -31,6 +31,141 @@ function buildPath(...paths) {
 			out += (p.startsWith('/') ? p : `/${p}`);
 	}
 	return out;
+}
+_state.fs = {
+	queue: [],
+	busy: null,
+
+	handleBatched: async (perform) => {
+		/* wait for space in the queue */
+		while (_state.fs.queue.length >= FILE_OPERATION_BATCH_SIZE) {
+			if (_state.fs.busy == null) {
+				_state.fs.busy = (async () => {
+					await Promise.all(_state.fs.queue);
+					_state.fs.queue = [], _state.fs.busy = null;
+				})();
+			}
+			await _state.fs.busy;
+		}
+
+		/* write the task itself to the queue */
+		let resolver = null;
+		_state.fs.queue.push(new Promise((res) => resolver = res));
+
+		/* perform the final task while preserving exceptions */
+		try {
+			const result = await perform();
+			resolver();
+			return result;
+		} catch (e) {
+			resolver();
+			throw e;
+		}
+	},
+	fetchDirectory: (path, abort) => _state.fs.handleBatched(async () => {
+		let response = null;
+
+		/* check if the operation should be aborted */
+		if (abort())
+			throw 'Aborted';
+
+		/* fetch the response from the server */
+		try { response = await fetch(`${_state.makePath(true, false, path)}?raw=true&kind=directory`); }
+		catch (_) {
+			throw 'Network error';
+		}
+
+		/* validate the response */
+		if (!response.ok) {
+			if (response.status == 404)
+				throw 'Path not found';
+			if (response.status == 400 || response.status == 409) try {
+				throw await response.text();
+			} catch (_) { }
+			throw response.statusText;
+		}
+		if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
+			throw 'Unexpected server response';
+
+		/* parse the json and return it */
+		try {
+			const body = await response.json();
+			console.log(`Directory [${path}] fetched`);
+			return body;
+		}
+		catch (_) {
+			throw 'Malformed server response';
+		}
+	}),
+	makeDirectory: (path, silent) => _state.fs.handleBatched(async () => {
+		let response = null;
+
+		/* try to create the new directory */
+		try { response = await fetch(`${_state.makePath(true, false, path)}?kind=directory&silence=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
+		catch (_) {
+			throw 'Network error';
+		}
+
+		/* validate the response */
+		if (response.ok) {
+			console.log(`Directory [${path}] created`);
+			return;
+		}
+		if (response.status == 404)
+			throw 'Path not found';
+		if (response.status == 400 || response.status == 409) try {
+			throw await response.text();
+		} catch (_) { }
+		throw response.statusText;
+	}),
+	remove: (path, kind) => _state.fs.handleBatched(async () => {
+		let response = null;
+
+		/* try to remove the object */
+		try { response = await fetch(`${_state.makePath(true, false, path)}?kind=${kind}`, { method: 'DELETE' }); }
+		catch (_) {
+			throw 'Network error';
+		}
+
+		/* validate the response */
+		if (response.ok) {
+			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] removed`);
+			return;
+		}
+		if (response.status == 404)
+			throw 'Path not found';
+		if (response.status == 400 || response.status == 409) try {
+			throw await response.text();
+		} catch (_) { }
+		throw response.statusText;
+	}),
+	upload: (path, progress, file) => _state.fs.handleBatched(() => new Promise((resolve, reject) => {
+		const request = new XMLHttpRequest();
+		let settled = false;
+
+		/* try to perform the actual request */
+		request.open('POST', `${_state.makePath(true, false, path)}?kind=file`, true);
+		request.upload.onprogress = (e) => {
+			if (!settled)
+				progress(e.loaded / file.size);
+		}
+		request.onload = () => {
+			if (settled) return; settled = true;
+			if (request.status == 404)
+				return reject('Path not found');
+			if (request.status == 400 || request.status == 409)
+				return reject(request.responseText);
+			if (request.status < 200 || request.status >= 300)
+				return reject(request.statusText);
+			console.log(`File [${path}] uploaded`);
+			resolve();
+		};
+		request.onerror = () => {
+			if (settled) return; settled = true;
+			reject('Network error');
+		}
+		request.send(file);
+	}))
 }
 
 _state.makePath = (root, base, ...paths) => {
@@ -474,7 +609,7 @@ _state.showCreateMenu = () => {
 	_state.updateOverlay('menu-overlay', () => { settled = true; });
 
 	/* wire up the corresponding click logic */
-	const processInputFiles = (input) => {
+	const processInputFiles = (input, directory) => {
 		if (input.files == null) return;
 		const list = [];
 
@@ -484,7 +619,7 @@ _state.showCreateMenu = () => {
 			list.push({ kind: 'file', size: file.size, path: `/${(path != '') ? path : file.name}` });
 		}
 		input.files = null;
-		_state.uploadContent(list);
+		_state.uploadContent(list, (directory ? 'Selected directory' : 'Selected files'));
 	};
 	content.children[0].onclick = () => {
 		if (settled) return;
@@ -519,7 +654,7 @@ _state.showCreateMenu = () => {
 		const input = document.createElement('input');
 		input.type = 'file';
 		input.multiple = true;
-		input.onchange = () => processInputFiles(input);
+		input.onchange = () => processInputFiles(input, false);
 		input.click();
 	};
 	content.children[2].onclick = () => {
@@ -529,7 +664,7 @@ _state.showCreateMenu = () => {
 		const input = document.createElement('input');
 		input.type = 'file';
 		input.webkitdirectory = true;
-		input.onchange = () => processInputFiles(input);
+		input.onchange = () => processInputFiles(input, true);
 		input.click();
 	};
 }
@@ -553,11 +688,6 @@ _state.showMoveCopyPicker = (move, callback) => {
 
 	/* setup helper functions for the dialog */
 	let settled = false, busyTimer = null, cancelTask = () => { };
-	const failFetch = (msg) => {
-		if (settled) return;
-		_state.pushStaticText(msg, false);
-		_state.updateOverlay('pick-overlay', null);
-	};
 	const markAsBusy = () => {
 		busyTimer = setTimeout(() => {
 			if (settled) return;
@@ -579,30 +709,25 @@ _state.showMoveCopyPicker = (move, callback) => {
 		markAsBusy();
 
 		/* fetch the directory state from the server */
-		fetch(`${_state.makePath(true, false, target)}?raw=true?kind=directory`)
-			.then((resp) => {
+		_state.fs.fetchDirectory(target, () => settled)
+			.then((json) => {
 				if (settled) return;
+				clearBusy();
 
-				if (!resp.ok)
-					return failFetch(`Error: ${resp.statusText}`);
-				if (resp.headers.has('content-type') && !resp.headers.get('content-type').startsWith('application/json'))
-					return failFetch('Unexpected server response');
-				resp.json().then((content) => {
-					console.log(`Directory [${target}] fetched`);
-					if (settled) return;
-					clearBusy();
-
-					/* collect the list of directories and update the view */
-					const targetList = [];
-					for (const name in content) {
-						if (content[name].kind == 'directory')
-							targetList.push(name);
-					}
-					fetched[target] = targetList.sort();
-					updateView(target);
-				}).catch(() => failFetch('Malformed server response'));
+				/* collect the list of directories and update the view */
+				const targetList = [];
+				for (const name in json) {
+					if (json[name].kind == 'directory')
+						targetList.push(name);
+				}
+				fetched[target] = targetList.sort();
+				updateView(target);
 			})
-			.catch(() => failFetch('Network error'));
+			.catch((e) => {
+				if (settled) return;
+				_state.pushTaskStatic(`Reading [${target}]`, e, false);
+				_state.updateOverlay('pick-overlay', null);
+			});
 	};
 	const updateView = (path) => {
 		const directories = fetched[path];
@@ -857,20 +982,17 @@ _state.createDirectory = (element, path, callback) => {
 		if (fileName == null)
 			return callback(null);
 
+		const fullPath = buildPath(path, encodeURIComponent(fileName));
 		callback(new Promise((resolve, reject) => {
-			const update = _state.pushTaskStatus(`Create Directory: ${fileName}`);
+			const update = _state.pushTaskStatus(`Create: [${fullPath}]`);
 			update('Creating...', null);
-			fetch(_state.makePath(true, false, path, `${encodeURIComponent(fileName)}?kind=directory`), { method: 'POST' })
-				.then((resp) => {
-					if (!resp.ok) {
-						update(`Error: ${resp.statusText}`, false);
-						return reject();
-					}
+			_state.fs.makeDirectory(fullPath, false)
+				.then(() => {
 					update('Created!', true);
 					resolve(fileName);
 				})
-				.catch(() => {
-					update('Network error', false);
+				.catch((e) => {
+					update(e, false);
 					return reject();
 				});
 		}));
@@ -889,32 +1011,17 @@ _state.removeContent = async (name, directory) => {
 	const totalList = [];
 	if (directory) {
 		let initFailed = false;
-
-		const handleError = (msg) => {
-			if (!initFailed)
-				totalUpdate(msg, false);
-			initFailed = true;
-		};
 		const fetchAndUpdate = async (path) => {
 			if (initFailed) return;
 
 			/* fetch the content list */
-			let response = null, content = null;
-			try {
-				response = await fetch(`${_state.makePath(true, false, path)}?raw=true?kind=directory`);
-				if (!response.ok)
-					return handleError(`Error reading [${path}]: ${response.statusText}`);
-			}
-			catch (_) {
-				return handleError(`Error reading [${path}]: Network error`);
-			}
-
-			/* parse the content list */
-			if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
-				return handleError(`Error reading [${path}]: Unexpected server response`);
-			try { content = await response.json() }
-			catch (_) {
-				return handleError(`Error reading [${path}]: Malformed server response`);
+			let content = null;
+			try { content = await _state.fs.fetchDirectory(path, () => initFailed); }
+			catch (e) {
+				if (!initFailed)
+					totalUpdate(`Reading [${path}]: ${e}`, false);
+				initFailed = true;
+				return;
 			}
 
 			/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
@@ -950,38 +1057,37 @@ _state.removeContent = async (name, directory) => {
 		entry.created = new Promise((res) => resolver = res);
 
 		batched.push((async () => {
-			let created = false;
-
 			/* check if this is a directory, in which case all of its children
 			*	need to be awaited, to ensure they have been properly deleted */
 			if (entry.kind == 'directory') {
 				for (const index of entry.children) {
 					if (await totalList[index].created)
 						continue;
-					++totalSkipped;
+
+					/* mark the directory as skipped, as the child failed (not if already failed) */
+					if (totalFailed <= FILE_MAX_FAILURES)
+						++totalSkipped;
 					return resolver(false);
 				}
 			}
 
-			/* try to perform the actual deletion */
+			/* check if the operation has already failed, in which case nothing
+			*	more will be performed (i.e. just silently skip the task) */
 			if (totalFailed > FILE_MAX_FAILURES)
 				return resolver(false);
+
+			/* try to perform the actual deletion */
+			let success = false;
 			try {
-				const response = await fetch(`${_state.makePath(true, false, entry.path)}?kind=${entry.kind}`, { method: 'DELETE' });
-				if (response.ok)
-					created = true;
-				else {
-					_state.pushTaskStatic(`Remove: [${entry.path}]`, response.statusText, false);
-					++totalFailed;
-				}
+				await _state.fs.remove(entry.path, entry.kind);
+				success = true;
 			}
-			catch (_) {
-				_state.pushTaskStatic(`Remove: [${entry.path}]`, 'Network error', false);
+			catch (e) {
+				_state.pushTaskStatic(`Remove: [${entry.path}]`, e, false);
 				++totalFailed;
 			}
-
 			totalUpdate(++totalPerformed, null, totalList.length);
-			resolver(created);
+			resolver(success);
 		})());
 
 		/* check if the batch should be awaited again and if the operation has failed */
@@ -1003,7 +1109,7 @@ _state.removeContent = async (name, directory) => {
 		totalUpdate('Successfully removed!', true);
 	}
 }
-_state.uploadContent = async (list) => {
+_state.uploadContent = async (list, what) => {
 	if (list.length == 0)
 		return;
 	if (!_state.config.upload)
@@ -1012,7 +1118,7 @@ _state.uploadContent = async (list) => {
 	/* check if its a complex list (directories need to be created), in which case they have to be fetched first */
 	let totalUpdate = null, totalList = [];
 	if (list.findIndex((e) => e.kind == 'directory' || e.path.lastIndexOf('/') > 0) >= 0) {
-		totalUpdate = _state.pushTaskStatus(`Upload multiple objects`);
+		totalUpdate = _state.pushTaskStatus(`Upload: [${what}]`);
 		totalUpdate('Calculating...', null);
 
 		/* helper to ensure all directories are created */
@@ -1071,10 +1177,6 @@ _state.uploadContent = async (list) => {
 	else
 		totalList = list;
 	return console.log(totalList);
-	ensure_remove_content_is_batched();
-	handle_children_callback_can_fail();
-	handle_file_size_missing();
-
 
 	/* setup the list of created directories and helper to create directories */
 	let totalFailed = 0;
@@ -1113,66 +1215,50 @@ _state.uploadContent = async (list) => {
 
 			/* try to create the new directory */
 			try {
-				const response = await fetch(`${_state.makePath(true, true, path)}?kind=directory?silent=true`, { method: 'POST' });
-				if (response.ok) {
-					/* check if this is the root directory and preemtively add the entry to the list (ensure that a new list is created)  */
-					if (path.length == next.length + 1)
-						_state.updateList(_state.list.concat([{ name: next, kind: 'directory', size: 0, modified: 0 }]));
-					return resolve(true);
-				}
-				_state.pushTaskStatic(`Create: [${path}]`, `Error: ${response.statusText}`, false);
+				await _state.fs.makeDirectory(path, true);
+
+				/* check if this is the root directory and preemtively add the entry to the list (ensure that a new list is created)  */
+				if (path.length == next.length + 1)
+					_state.updateList(_state.list.concat([{ name: next, kind: 'directory', size: 0, modified: 0 }]));
+				resolve(true);
 			}
-			catch (_) { _state.pushTaskStatic(`Create: [${path}]`, 'Network error', false); }
-			++totalFailed;
-			return resolve(false);
+			catch (e) {
+				_state.pushTaskStatic(`Create: [${path}]`, e, false);
+				++totalFailed;
+				resolve(false);
+			}
 		});
 		return directories[path];
 	};
-	const uploadFile = (file) => new Promise(async (resolve) => {
+	const uploadFile = async (file) => {
 		const name = file.path.substring(file.path.lastIndexOf('/') + 1);
 
 		/* ensure that the parent directories exist and that the operation should continue */
 		await ensureDirectory(file.path.substring(0, file.path.length - name.length - 1));
 		if (totalFailed > FILE_MAX_FAILURES)
-			return resolve();
+			return;
 
 		/* check if the file is too large (does not contribute to the total-failed counter) */
 		const update = _state.pushTaskStatus(`Upload: [${file.path}]`);
 		if (_state.config.maxUploadSize != null && file.size > _state.config.maxUploadSize) {
 			update(`Skip: too large [${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)}]`, false);
-			return resolve();
+			return;
 		}
 		update(0, null);
 
-		/* try to perform the actual request */
-		const request = new XMLHttpRequest();
-		let settled = false;
-		request.open('POST', `${_state.makePath(true, true, file.path)}?kind=file`, true);
-		request.upload.onprogress = (e) => {
-			if (settled) return;
-			update(e.loaded / file.size, null);
-		}
-		request.onload = () => {
-			if (settled) return; settled = true;
-			if (request.status < 200 || request.status >= 300) {
-				++totalFailed;
-				update(`Error: ${request.statusText}`, false);
-				return resolve();
-			}
+		/* try to perform the actual upload */
+		try {
+			await _state.fs.upload(_state.makePath(false, true, file.path), (p) => upload(p, null), file);
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
 			_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: 0 }]));
 			update('Successfully uploaded!', true);
-			resolve();
-		};
-		request.onerror = () => {
-			if (settled) return; settled = true;
-			++totalFailed;
-			update('Network error', false);
-			resolve();
 		}
-		request.send(file);
-	});
+		catch (e) {
+			++totalFailed;
+			update(e, false);
+		}
+	};
 	const uploadDirectory = (path) => new Promise(async (resolve) => {
 		/* ensure that the directories exist and that the operation should continue */
 		const result = await ensureDirectory(path);
@@ -1265,12 +1351,62 @@ window.onload = () => {
 			e.preventDefault();
 			dropCountDepth = 0;
 			dropZone.classList.remove('expand');
-			for (const item of e.dataTransfer.items) {
-				const entry = item.webkitGetAsEntry();
-				const file = item.getAsFile();
-				if (entry != null && entry.isFile && file != null)
-					_state.uploadFile(file, file.name, file.size);
-			}
+
+			/* helper to recursively unpack the tree */
+			const unpackEntry = async (entry, parent) => {
+				const path = `${parent}/${entry.name}`;
+
+				/* check if its a file, and await its stats */
+				if (entry.isFile) {
+					try {
+						const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+						return { kind: 'file', path, size: file.size };
+					}
+					catch (_) {
+						_state.pushStaticText(`Error processing dropped file [${path}]`, false);
+						return null;
+					}
+				}
+				else if (!entry.isDirectory)
+					return null;
+
+				/* create the async children reader */
+				const children = async () => {
+					const reader = entry.createReader(), list = [];
+					while (true) {
+						let entries = null;
+						try { entries = await new Promise((resolve, reject) => reader.readEntries(resolve, reject)); } catch (_) {
+							_state.pushStaticText(`Error processing children of dropped directory [${path}]`, false);
+							return [];
+						}
+
+						if (entries.length == 0)
+							return list;
+						for (const child of entries) {
+							const processed = await unpackEntry(child, path);
+							if (processed != null)
+								list.push(processed);
+						}
+					}
+				};
+				return { kind: 'directory', path, children };
+			};
+
+			(async () => {
+				const list = [];
+
+				/* collect the list of uploads and trigger them */
+				for (const item of e.dataTransfer.items) {
+					const entry = item.webkitGetAsEntry();
+					if (entry == null)
+						continue;
+					const temp = await unpackEntry(entry, '');
+					if (temp != null)
+						list.push(temp);
+				}
+				_state.uploadContent(list, 'Dropped content');
+			})();
+
 		};
 
 		/* update the drop animations and add the size constraints */
