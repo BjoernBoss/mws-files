@@ -94,9 +94,18 @@ export class FileShare extends mws.ModuleHandler {
 		catch (err: any) {
 			if (err.code == 'ENOENT')
 				return client.respondBadRequest(`Path for ${kind} does not exist`);
-			if (err.code == 'EEXIST')
-				return client.respondConflict(`Path already exists`);
-			return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err}`);
+			if (err.code != 'EEXIST')
+				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err}`);
+
+			/* check if the directory already existed and should fail silently */
+			if (kind == 'directory' && client.url.searchParams.get('silent') == 'true') {
+				try {
+					if ((await libFsPromises.stat(filePath)).isDirectory())
+						return client.respondOk({ message: `Already exists` });
+				}
+				catch (err: any) { }
+			}
+			return client.respondConflict(`Path already exists`);
 		}
 	}
 	private async handleDelete(client: mws.ClientRequest, filePath: string): Promise<void> {
@@ -325,11 +334,14 @@ export class FileShare extends mws.ModuleHandler {
 			return this.handleUpload(client, filePath);
 
 		try {
+			const kind = client.url.searchParams.get('kind') ?? 'file';
 			const stats = await libFsPromises.stat(filePath);
 
 			/* check if a file is to be served */
 			if (stats.isFile()) {
-				if (!await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'File-Kind': 'file' } }))
+				if (kind != null && kind != 'file')
+					return client.respondConflict(`Path is not a file`);
+				if (!await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'Kind': 'file' } }))
 					client.respondNotFound();
 				return;
 			}
@@ -339,11 +351,15 @@ export class FileShare extends mws.ModuleHandler {
 				this.warning(`Unsupported file-system object encountered: ${filePath}`);
 				return client.respondNotFound();
 			}
+
+			/* validate the requested kind and fetch the actual list */
+			if (kind != null && kind != 'directory')
+				return client.respondConflict(`Path is not a directory`);
 			const list = await this.fetchDirectoryList(filePath);
 
 			/* check if the directory should be served in raw */
 			if (client.url.searchParams.get('raw') == 'true')
-				return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'File-Kind': 'directory' } });
+				return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
 
 			/* build the view for the directory */
 			await this.buildView(client, relativePath, list);
