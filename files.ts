@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2024-2026 Bjoern Boss Henrichsen */
 import * as mws from "@bjoernboss/mws";
+import * as libCrypto from "crypto";
 import * as libFs from "fs";
 import * as libFsPromises from "fs/promises";
 
-const MAX_UPLOAD_SIZE = 100_000_000;
+const MAX_UPLOAD_SIZE = 10_000_000_000;
+const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
 
 interface DirEntry {
@@ -39,6 +41,10 @@ export class FileShare extends mws.ModuleHandler {
 	private fileStatic: (path: string) => string;
 	private fileAssets: (path: string) => string;
 	private listener: Record<string, DirListener>;
+	private reservations: {
+		timeout: NodeJS.Timeout | null;
+		entries: Record<string, { age: number, id: string }>;
+	};
 
 	constructor(dataPath: string) {
 		super('files');
@@ -47,8 +53,25 @@ export class FileShare extends mws.ModuleHandler {
 		this.fileStatic = mws.createPathSelf(import.meta.url, '../static');
 		this.fileAssets = mws.createPathSelf(import.meta.url, '../assets');
 		this.listener = {};
+		this.reservations = { timeout: null, entries: {} };
 	}
 
+	private checkReservations(): void {
+		this.reservations.timeout = null;
+
+		/* remove all outdated reservations */
+		let time = Date.now(), remaining = false;
+		for (const key in this.reservations.entries) {
+			if (time - this.reservations.entries[key].age > MAX_RESERVATION_TIME_MS)
+				delete this.reservations.entries[key];
+			else
+				remaining = true;
+		}
+
+		/* check if another cleanup needs to be scheduled */
+		if (remaining)
+			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+	}
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
 		const out: Record<string, DirEntry> = {};
 
@@ -74,12 +97,28 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		return out;
 	}
-	private async handleUpload(client: mws.ClientRequest, filePath: string): Promise<void> {
+	private async handleUpload(client: mws.ClientRequest, filePath: string, parent: string): Promise<void> {
 		const kind = client.url.searchParams.get('kind') ?? 'file';
 		if (kind != 'file' && kind != 'directory')
 			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
+		const reservation = client.url.searchParams.get('reservation') ?? '';
 
 		try {
+			/* check if the path has been reserved and this is the user of the reservation */
+			if (filePath in this.reservations.entries) {
+				if (Date.now() - this.reservations.entries[filePath].age <= MAX_RESERVATION_TIME_MS && this.reservations.entries[filePath].id != reservation)
+					return client.respondConflict({ message: `Path has been reserved` });
+				delete this.reservations.entries[filePath];
+			}
+
+			/* check if a new reservation should be placed, in which case the path needs to be fetched in order to determine if it already exists */
+			if (client.url.searchParams.get('reserve') == 'true') {
+				const stat = await libFsPromises.stat(filePath);
+				if (!stat.isDirectory() && !stat.isFile())
+					this.warning(`Unsupported file-system object encountered: ${filePath}`);
+				return client.respondConflict({ message: `Path already exists` });
+			}
+
 			/* check if a directory is to be created */
 			if (kind == 'directory') {
 				await libFsPromises.mkdir(filePath, { recursive: false });
@@ -87,15 +126,32 @@ export class FileShare extends mws.ModuleHandler {
 			}
 
 			/* try to upload the file */
-			else if (!await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true }))
+			if (!await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true }))
 				return client.respondConflict({ message: `Path already exists` });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
-			if (err.code == 'ENOENT')
-				return client.respondNotFound();
+			/* check if the path does not yet exist, but is being reserved */
+			if (err.code == 'ENOENT') {
+				if (client.url.searchParams.get('reserve') != 'true')
+					return client.respondNotFound();
+
+				/* check if the parent directory exists */
+				let parentExists = false;
+				try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); }
+				catch (err: any) { }
+				if (!parentExists)
+					return client.respondNotFound();
+
+				/* insert the new reservation */
+				const id = libCrypto.randomUUID();
+				this.reservations.entries[filePath] = { id, age: Date.now() };
+				if (this.reservations.timeout == null)
+					this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+				return client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
+			}
 			if (err.code != 'EEXIST')
-				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err}`);
+				return client.respondInternalError(`Failed to create/reserve ${kind} [${filePath}]: ${err.message}`);
 
 			/* check if the directory already existed and should fail silently */
 			if (kind == 'directory' && client.url.searchParams.get('silent') == 'true') {
@@ -293,6 +349,9 @@ export class FileShare extends mws.ModuleHandler {
 	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
 		client.trace(`Files handler for [${client.path}]`);
 
+		if (client.method != 'GET' && Math.random() < 0.05 && false)
+			return client.respondInternalError('Random failure');
+
 		/* check if its just static content to be served */
 		if (client.isInsideOf(Endpoints.static)) {
 			if (client.requireMethod('GET') != null)
@@ -331,7 +390,7 @@ export class FileShare extends mws.ModuleHandler {
 		if (method == 'DELETE')
 			return this.handleDelete(client, filePath);
 		else if (method == 'POST')
-			return this.handleUpload(client, filePath);
+			return this.handleUpload(client, filePath, mws.splitFilePath(relativePath)[0]);
 
 		try {
 			const kind = client.url.searchParams.get('kind');
@@ -391,5 +450,10 @@ export class FileShare extends mws.ModuleHandler {
 				clearTimeout(entry.timeout);
 			entry.close();
 		}
+
+		/* reset any potential reservation-clear timers */
+		if (this.reservations.timeout != null)
+			clearTimeout(this.reservations.timeout);
+		this.reservations = { timeout: null, entries: {} };
 	}
 }

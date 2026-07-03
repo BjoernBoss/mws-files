@@ -10,7 +10,7 @@ const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {} };
+const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null } };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -32,42 +32,20 @@ function buildPath(...paths) {
 	}
 	return out;
 }
+
 _state.fs = {
-	queue: [],
-	busy: null,
-
-	handleBatched: async (perform) => {
-		/* wait for space in the queue */
-		while (_state.fs.queue.length >= FILE_OPERATION_BATCH_SIZE) {
-			if (_state.fs.busy == null) {
-				_state.fs.busy = (async () => {
-					await Promise.all(_state.fs.queue);
-					_state.fs.queue = [], _state.fs.busy = null;
-				})();
-			}
-			await _state.fs.busy;
+	handleFetchResponse: async (response) => {
+		if (response.status == 404)
+			return 'Path not found';
+		if (response.status == 400 || response.status == 409) {
+			let reason = null;
+			try { reason = await response.text(); } catch (_) { }
+			if (reason != null) return reason;
 		}
-
-		/* write the task itself to the queue */
-		let resolver = null;
-		_state.fs.queue.push(new Promise((res) => resolver = res));
-
-		/* perform the final task while preserving exceptions */
-		try {
-			const result = await perform();
-			resolver();
-			return result;
-		} catch (e) {
-			resolver();
-			throw e;
-		}
+		return response.statusText;
 	},
-	fetchDirectory: (path, abort) => _state.fs.handleBatched(async () => {
+	fetchDirectory: async (path) => {
 		let response = null;
-
-		/* check if the operation should be aborted */
-		if (abort())
-			throw 'Aborted';
 
 		/* fetch the response from the server */
 		try { response = await fetch(`${_state.makePath(true, false, path)}?raw=true&kind=directory`); }
@@ -76,14 +54,8 @@ _state.fs = {
 		}
 
 		/* validate the response */
-		if (!response.ok) {
-			if (response.status == 404)
-				throw 'Path not found';
-			if (response.status == 400 || response.status == 409) try {
-				throw await response.text();
-			} catch (_) { }
-			throw response.statusText;
-		}
+		if (!response.ok)
+			throw await _state.fs.handleFetchResponse(response);
 		if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
 			throw 'Unexpected server response';
 
@@ -96,8 +68,8 @@ _state.fs = {
 		catch (_) {
 			throw 'Malformed server response';
 		}
-	}),
-	makeDirectory: (path, silent) => _state.fs.handleBatched(async () => {
+	},
+	makeDirectory: async (path, silent) => {
 		let response = null;
 
 		/* try to create the new directory */
@@ -107,18 +79,12 @@ _state.fs = {
 		}
 
 		/* validate the response */
-		if (response.ok) {
+		if (response.ok)
 			console.log(`Directory [${path}] created`);
-			return;
-		}
-		if (response.status == 404)
-			throw 'Path not found';
-		if (response.status == 400 || response.status == 409) try {
-			throw await response.text();
-		} catch (_) { }
-		throw response.statusText;
-	}),
-	remove: (path, kind) => _state.fs.handleBatched(async () => {
+		else
+			throw await _state.fs.handleFetchResponse(response);
+	},
+	remove: async (path, kind) => {
 		let response = null;
 
 		/* try to remove the object */
@@ -128,35 +94,39 @@ _state.fs = {
 		}
 
 		/* validate the response */
-		if (response.ok) {
+		if (response.ok)
 			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] removed`);
-			return;
-		}
-		if (response.status == 404)
-			throw 'Path not found';
-		if (response.status == 400 || response.status == 409) try {
-			throw await response.text();
-		} catch (_) { }
-		throw response.statusText;
-	}),
-	upload: (path, progress, file) => _state.fs.handleBatched(() => new Promise((resolve, reject) => {
-		const request = new XMLHttpRequest();
-		let settled = false;
+		else
+			throw await _state.fs.handleFetchResponse(response);
+	},
+	upload: (path, progress, file) => new Promise(async (resolve, reject) => {
+		const baseUrl = `${_state.makePath(true, false, path)}?kind=file`;
 
-		/* try to perform the actual request */
-		request.open('POST', `${_state.makePath(true, false, path)}?kind=file`, true);
+		/* try to reserve the given path (to test if its valid/available, before writing data to it) */
+		let response = null, settled = false;
+		try { response = await fetch(`${baseUrl}&reserve=true`, { method: 'POST' }); }
+		catch (_) {
+			return reject('Network error');
+		}
+
+		/* extract the reservation id */
+		if (!response.ok)
+			return reject(await _state.fs.handleFetchResponse(response));
+		if (!response.headers.has('reservation-id'))
+			return reject('Unexpected server response');
+		id = response.headers.get('reservation-id');
+
+		/* try to perform the actual upload request using the given reservation */
+		const request = new XMLHttpRequest();
+		request.open('POST', `${baseUrl}&reservation=${id}`, true);
 		request.upload.onprogress = (e) => {
 			if (!settled)
 				progress(e.loaded / file.size);
 		}
 		request.onload = () => {
 			if (settled) return; settled = true;
-			if (request.status == 404)
-				return reject('Path not found');
-			if (request.status == 400 || request.status == 409)
-				return reject(request.responseText);
 			if (request.status < 200 || request.status >= 300)
-				return reject(request.statusText);
+				return reject('Unexpected server response');
 			console.log(`File [${path}] uploaded`);
 			resolve();
 		};
@@ -165,16 +135,45 @@ _state.fs = {
 			reject('Network error');
 		}
 		request.send(file);
-	}))
+	})
 }
+_state.batch = async (task) => {
+	const batch = _state.batchState;
 
+	/* wait for space in the queue */
+	while (batch.active >= FILE_OPERATION_BATCH_SIZE) {
+		if (batch.waiting == null)
+			batch.waiting = new Promise((res) => batch.resolver = res);
+		await batch.waiting;
+	}
+	++batch.active;
+
+	/* cleanup helper to clear the queue once it has been emptied */
+	const cleanup = () => {
+		--batch.active;
+		if (batch.waiting == null)
+			return;
+		batch.waiting = null;
+		batch.resolver();
+	};
+
+	/* perform the task and preserve the return value/exceptions */
+	try {
+		const result = await task();
+		cleanup();
+		return result;
+	} catch (e) {
+		cleanup();
+		throw e;
+	}
+}
 _state.makePath = (root, base, ...paths) => {
 	const p0 = (root ? _state.config.rootPath : '/'), p1 = (base ? _state.config.basePath : '/');
 	return buildPath(p0, p1, ...paths);
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {
-		if (size < option[0] && option[0] > 0)
+		if (size < option[0] && option[0] > 1)
 			continue;
 		if (option[1] == '')
 			return `${size} Bytes`;
@@ -616,7 +615,7 @@ _state.showCreateMenu = () => {
 		/* collect the list of files (input only produces files) and process it */
 		for (const file of input.files) {
 			const path = (file.webkitRelativePath ?? '');
-			list.push({ kind: 'file', size: file.size, path: `/${(path != '') ? path : file.name}` });
+			list.push({ kind: 'file', size: file.size, path: `/${(path != '') ? path : file.name}`, file });
 		}
 		input.files = null;
 		_state.uploadContent(list, (directory ? 'Selected directory' : 'Selected files'));
@@ -709,25 +708,26 @@ _state.showMoveCopyPicker = (move, callback) => {
 		markAsBusy();
 
 		/* fetch the directory state from the server */
-		_state.fs.fetchDirectory(target, () => settled)
-			.then((json) => {
-				if (settled) return;
-				clearBusy();
+		_state.batch(() => {
+			if (!settled)
+				_state.fs.fetchDirectory(target);
+		}).then((json) => {
+			if (settled) return;
+			clearBusy();
 
-				/* collect the list of directories and update the view */
-				const targetList = [];
-				for (const name in json) {
-					if (json[name].kind == 'directory')
-						targetList.push(name);
-				}
-				fetched[target] = targetList.sort();
-				updateView(target);
-			})
-			.catch((e) => {
-				if (settled) return;
-				_state.pushTaskStatic(`Reading [${target}]`, e, false);
-				_state.updateOverlay('pick-overlay', null);
-			});
+			/* collect the list of directories and update the view */
+			const targetList = [];
+			for (const name in json) {
+				if (json[name].kind == 'directory')
+					targetList.push(name);
+			}
+			fetched[target] = targetList.sort();
+			updateView(target);
+		}).catch((e) => {
+			if (settled) return;
+			_state.pushTaskStatic(`Reading [${target}]`, e, false);
+			_state.updateOverlay('pick-overlay', null);
+		});
 	};
 	const updateView = (path) => {
 		const directories = fetched[path];
@@ -986,7 +986,7 @@ _state.createDirectory = (element, path, callback) => {
 		callback(new Promise((resolve, reject) => {
 			const update = _state.pushTaskStatus(`Create: [${fullPath}]`);
 			update('Creating...', null);
-			_state.fs.makeDirectory(fullPath, false)
+			_state.batch(() => _state.fs.makeDirectory(fullPath, false))
 				.then(() => {
 					update('Created!', true);
 					resolve(fileName);
@@ -998,126 +998,15 @@ _state.createDirectory = (element, path, callback) => {
 		}));
 	});
 }
-_state.removeContent = async (name, directory) => {
-	if (!_state.config.delete)
-		return _state.pushStaticText('Not allowed to delete content', false);
-	console.log(`Removing [${_state.makePath(false, true, name)}]...`);
-
-	/* setup the notification */
-	const totalUpdate = _state.pushTaskStatus(`Remove: [${name}]`);
-	totalUpdate('Calculating...', null);
-
-	/* recursively collect the list of all files and directories to be removed */
-	const totalList = [];
-	if (directory) {
-		let initFailed = false;
-		const fetchAndUpdate = async (path) => {
-			if (initFailed) return;
-
-			/* fetch the content list */
-			let content = null;
-			try { content = await _state.fs.fetchDirectory(path, () => initFailed); }
-			catch (e) {
-				if (!initFailed)
-					totalUpdate(`Reading [${path}]: ${e}`, false);
-				initFailed = true;
-				return;
-			}
-
-			/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
-			const promises = [], children = [];
-			for (const name in content) {
-				if (initFailed) return;
-
-				const childPath = buildPath(path, name);
-				if (content[name].kind == 'file') {
-					children.push(totalList.length);
-					totalList.push({ path: childPath, kind: 'file' });
-				}
-				else
-					promises.push(fetchAndUpdate(childPath));
-			}
-
-			/* await the children and then push itself onto the list (with the indices of all children) */
-			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
-			return totalList.length - 1;
-		};
-		await fetchAndUpdate(_state.makePath(false, true, name));
-		if (initFailed)
-			return;
-	}
-	else
-		totalList.push({ path: _state.makePath(false, true, name), kind: 'file' });
-	totalUpdate(0, null, totalList.length);
-
-	/* iterate over the list and remove the content (in batches to not overwhelm the user and the network) */
-	let batched = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
-	for (let i = 0; i < totalList.length; ++i) {
-		let entry = totalList[i], resolver = null;
-		entry.created = new Promise((res) => resolver = res);
-
-		batched.push((async () => {
-			/* check if this is a directory, in which case all of its children
-			*	need to be awaited, to ensure they have been properly deleted */
-			if (entry.kind == 'directory') {
-				for (const index of entry.children) {
-					if (await totalList[index].created)
-						continue;
-
-					/* mark the directory as skipped, as the child failed (not if already failed) */
-					if (totalFailed <= FILE_MAX_FAILURES)
-						++totalSkipped;
-					return resolver(false);
-				}
-			}
-
-			/* check if the operation has already failed, in which case nothing
-			*	more will be performed (i.e. just silently skip the task) */
-			if (totalFailed > FILE_MAX_FAILURES)
-				return resolver(false);
-
-			/* try to perform the actual deletion */
-			let success = false;
-			try {
-				await _state.fs.remove(entry.path, entry.kind);
-				success = true;
-			}
-			catch (e) {
-				_state.pushTaskStatic(`Remove: [${entry.path}]`, e, false);
-				++totalFailed;
-			}
-			totalUpdate(++totalPerformed, null, totalList.length);
-			resolver(success);
-		})());
-
-		/* check if the batch should be awaited again and if the operation has failed */
-		if (i + 1 < totalList.length && (i + 1) % FILE_OPERATION_BATCH_SIZE != 0 && totalFailed <= FILE_MAX_FAILURES)
-			continue;
-		await Promise.all(batched);
-		batched = [];
-		if (totalFailed > FILE_MAX_FAILURES)
-			break;
-	}
-
-	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created; skipped can only be > 0, if failed is > 0) */
-	if (totalFailed > FILE_MAX_FAILURES)
-		totalUpdate(`Aborted due to too many failed deletions (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
-	else if (totalFailed > 0)
-		totalUpdate(`Failed to delete ${totalFailed} out of ${totalList.length} (Skipped: ${totalSkipped})`, false);
-	else {
-		_state.updateList(_state.list.filter((entry) => entry.name != name));
-		totalUpdate('Successfully removed!', true);
-	}
-}
 _state.uploadContent = async (list, what) => {
 	if (list.length == 0)
 		return;
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
 
-	/* check if its a complex list (directories need to be created), in which case they have to be fetched first */
+	/* check if its a complex list (larger than batch-size or directories need to be created), in which case they have to be fetched first */
 	let totalUpdate = null, totalList = [];
-	if (list.findIndex((e) => e.kind == 'directory' || e.path.lastIndexOf('/') > 0) >= 0) {
+	if (list.length > FILE_OPERATION_BATCH_SIZE || list.findIndex((e) => e.kind == 'directory' || e.path.lastIndexOf('/') > 0) >= 0) {
 		totalUpdate = _state.pushTaskStatus(`Upload: [${what}]`);
 		totalUpdate('Calculating...', null);
 
@@ -1154,7 +1043,7 @@ _state.uploadContent = async (list, what) => {
 			/* add the file and its dependency onto the parent */
 			if (entry.kind == 'file') {
 				const parent = fetchDirectory(entry.path.substring(0, entry.path.lastIndexOf('/')));
-				totalList.push({ kind: 'file', path: entry.path, size: entry.size, parent });
+				totalList.push({ kind: 'file', path: entry.path, size: entry.size, parent, file: entry.file });
 				return;
 			}
 
@@ -1176,130 +1065,208 @@ _state.uploadContent = async (list, what) => {
 	}
 	else
 		totalList = list;
-	return console.log(totalList);
 
-	/* setup the list of created directories and helper to create directories */
-	let totalFailed = 0;
-	const directories = {};
-	const ensureDirectory = (path) => {
-		if (path == '') path = '/';
-
-		/* check if the path is already being expanded */
-		if (path in directories)
-			return directories[path];
-
-		/* try to create the directory */
-		directories[path] = new Promise(async (resolve) => {
-			/* root is considered to always exist */
-			if (path == '/')
-				return resolve(true);
-			const next = path.substring(path.lastIndexOf('/') + 1);
-
-			/* check if its an entry in the current list, which is implicitly considered to exist */
-			if (path.length == next.length + 1) {
-				const index = _state.list.findIndex((e) => e.name == next);
-				if (index >= 0) {
-					if (_state.list[index].kind == 'directory')
-						return resolve(true);
-
-					_state.pushTaskStatic(`Create: [${path}]`, 'Is not a directory', false);
-					++totalFailed;
-					return resolve(false);
-				}
-			}
-
-			/* ensure that the parent path exists and that the entire operation has not been aborted */
-			await ensureDirectory(path.substring(0, path.length - next.length - 1));
-			if (totalFailed > FILE_MAX_FAILURES)
-				return resolve(false);
-
-			/* try to create the new directory */
-			try {
-				await _state.fs.makeDirectory(path, true);
-
-				/* check if this is the root directory and preemtively add the entry to the list (ensure that a new list is created)  */
-				if (path.length == next.length + 1)
-					_state.updateList(_state.list.concat([{ name: next, kind: 'directory', size: 0, modified: 0 }]));
-				resolve(true);
-			}
-			catch (e) {
-				_state.pushTaskStatic(`Create: [${path}]`, e, false);
-				++totalFailed;
-				resolve(false);
-			}
-		});
-		return directories[path];
-	};
+	/* helper functions to perform uploads */
 	const uploadFile = async (file) => {
-		const name = file.path.substring(file.path.lastIndexOf('/') + 1);
-
-		/* ensure that the parent directories exist and that the operation should continue */
-		await ensureDirectory(file.path.substring(0, file.path.length - name.length - 1));
-		if (totalFailed > FILE_MAX_FAILURES)
-			return;
+		const update = _state.pushTaskStatus(`Upload: [${file.path}]`);
 
 		/* check if the file is too large (does not contribute to the total-failed counter) */
-		const update = _state.pushTaskStatus(`Upload: [${file.path}]`);
 		if (_state.config.maxUploadSize != null && file.size > _state.config.maxUploadSize) {
 			update(`Skip: too large [${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)}]`, false);
-			return;
+			return null;
 		}
 		update(0, null);
 
 		/* try to perform the actual upload */
+		let success = false;
 		try {
-			await _state.fs.upload(_state.makePath(false, true, file.path), (p) => upload(p, null), file);
+			await _state.fs.upload(_state.makePath(false, true, file.path), (p) => update(p, null), file.file);
+			success = true;
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
-			_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: 0 }]));
+			const name = file.path.substring(file.path.lastIndexOf('/') + 1);
+			if (file.path.length == name.length + 1)
+				_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: 0 }]));
 			update('Successfully uploaded!', true);
 		}
 		catch (e) {
-			++totalFailed;
 			update(e, false);
 		}
+		return success;
 	};
-	const uploadDirectory = (path) => new Promise(async (resolve) => {
-		/* ensure that the directories exist and that the operation should continue */
-		const result = await ensureDirectory(path);
-		if (totalFailed > FILE_MAX_FAILURES)
-			return resolve();
+	const uploadDirectory = async (path) => {
+		/* try to create the new directory */
+		let success = false;
+		try {
+			await _state.fs.makeDirectory(_state.makePath(false, true, path), true);
+			success = true;
 
-		/* mark the directory as created (implicitly done by 'ensure-directory') */
-		_state.pushTaskStatic(`Create: [${path}]`, 'Successfully created!', true);
-		resolve();
-	});
+			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created)  */
+			const name = path.substring(path.lastIndexOf('/') + 1);
+			if (path.length == name.length + 1)
+				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: 0 }]));
+		}
+		catch (e) {
+			_state.pushTaskStatic(`Create: [${path}]`, e, false);
+		}
+		return success;
+	};
 
-	/* iterate over the content and upload it (in batches to not overwhelm the user and the network) */
-	let batched = [], totalPerformed = 0;
-	for (let i = 0; i < list.length; ++i) {
-		/* push the actual operation to the batch */
-		const entry = list[i];
-		batched.push((async () => {
-			if (!await (entry.kind == 'directory' ? uploadDirectory(entry.path) : uploadFile(entry)))
+	/* iterate over the list and collect all of the corresponding upload-promises (they take care of batching themselves) */
+	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
+	for (const entry of totalList) {
+		let resolver = null;
+		entry.promise = new Promise((res) => resolver = res);
+
+		promises.push(_state.batch(async () => {
+			/* check if the entry has a dependency and await it (mark the object as skipped if the parent failed; not if already failed) */
+			if (entry.parent != null && !await totalList[entry.parent].promise) {
+				if (totalFailed <= FILE_MAX_FAILURES)
+					++totalSkipped;
+				return resolver(false);
+			}
+
+			/* check if the operation has already failed, in which case nothing
+			*	more will be performed (i.e. just silently skip the task) */
+			if (totalFailed > FILE_MAX_FAILURES)
+				return resolver(false);
+
+			/* try to perform the actual upload */
+			let result = null;
+			if (entry.kind == 'file')
+				result = await uploadFile(entry);
+			else
+				result = await uploadDirectory(entry.path);
+			resolver(result ?? false);
+
+			/* update the overall task counter */
+			if (result == null) {
+				++totalSkipped;
 				return;
+			}
+			++totalPerformed;
+			if (!result)
+				++totalFailed;
 			if (totalUpdate != null)
-				totalUpdate(++totalPerformed, null, list.length);
-		})());
-
-		/* check if the batch should be awaited again and if the operation has failed */
-		if (i + 1 < list.length && (i + 1) % FILE_OPERATION_BATCH_SIZE != 0 && totalFailed <= FILE_MAX_FAILURES)
-			continue;
-		await Promise.all(batched);
-		batched = [];
-		if (totalFailed > FILE_MAX_FAILURES)
-			break;
+				totalUpdate(totalPerformed, null, totalList.length);
+		}));
 	}
+	await Promise.all(promises);
 
 	/* log the final status message */
 	if (totalUpdate == null)
 		return;
 	if (totalFailed > FILE_MAX_FAILURES)
-		totalUpdate(`Aborted due to too many failed deletions (${totalFailed} failed out of ${totalPerformed} performed of required ${list.length})`, false);
+		totalUpdate(`Aborted due to too many failed uploads (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
 	else if (totalFailed > 0)
-		totalUpdate(`Failed to upload ${totalFailed} out of ${totalPerformed} (${list.length - totalPerformed} skipped)`, false);
+		totalUpdate(`Failed to upload ${totalFailed} out of ${totalPerformed} (${totalSkipped} skipped)`, false);
 	else
 		totalUpdate('Successfully uploaded!', true);
+}
+_state.removeContent = async (name, directory) => {
+	if (!_state.config.delete)
+		return _state.pushStaticText('Not allowed to delete content', false);
+	console.log(`Removing [${_state.makePath(false, true, name)}]...`);
+
+	/* setup the notification */
+	const totalUpdate = _state.pushTaskStatus(`Remove: [${name}]`);
+	totalUpdate('Calculating...', null);
+
+	/* recursively collect the list of all files and directories to be removed */
+	const totalList = [];
+	if (directory) {
+		let initFailed = false;
+		const fetchAndUpdate = async (path) => {
+			if (initFailed) return;
+
+			/* fetch the content list */
+			let content = null;
+			try { content = await _state.batch(() => _state.fs.fetchDirectory(path)); }
+			catch (e) {
+				if (!initFailed)
+					totalUpdate(`Reading [${path}]: ${e}`, false);
+				initFailed = true;
+				return;
+			}
+			if (initFailed) return;
+
+			/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
+			const promises = [], children = [];
+			for (const name in content) {
+				if (initFailed) return;
+
+				const childPath = buildPath(path, name);
+				if (content[name].kind == 'file') {
+					children.push(totalList.length);
+					totalList.push({ path: childPath, kind: 'file' });
+				}
+				else
+					promises.push(fetchAndUpdate(childPath));
+			}
+
+			/* await the children and then push itself onto the list (with the indices of all children) */
+			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
+			return totalList.length - 1;
+		};
+		await fetchAndUpdate(_state.makePath(false, true, name));
+		if (initFailed)
+			return;
+	}
+	else
+		totalList.push({ path: _state.makePath(false, true, name), kind: 'file' });
+	totalUpdate(0, null, totalList.length);
+
+	/* iterate over the list and collect all of the corresponding delete-promises (they take care of batching themselves) */
+	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
+	for (const entry of totalList) {
+		let resolver = null;
+		entry.promise = new Promise((res) => resolver = res);
+
+		promises.push(_state.batch(async () => {
+			/* check if this is a directory, in which case all of its children
+			*	need to be awaited, to ensure they have been properly deleted */
+			if (entry.kind == 'directory') {
+				for (const index of entry.children) {
+					if (await totalList[index].promise)
+						continue;
+
+					/* mark the directory as skipped, as the child failed (not if already failed) */
+					if (totalFailed <= FILE_MAX_FAILURES)
+						++totalSkipped;
+					return resolver(false);
+				}
+			}
+
+			/* check if the operation has already failed, in which case nothing
+			*	more will be performed (i.e. just silently skip the task) */
+			if (totalFailed > FILE_MAX_FAILURES)
+				return resolver(false);
+
+			/* try to perform the actual deletion */
+			let success = false;
+			try {
+				await _state.fs.remove(entry.path, entry.kind);
+				success = true;
+			}
+			catch (e) {
+				_state.pushTaskStatic(`Remove: [${entry.path}]`, e, false);
+				++totalFailed;
+			}
+			totalUpdate(++totalPerformed, null, totalList.length);
+			resolver(success);
+		}));
+	}
+	await Promise.all(promises);
+
+	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created; skipped can only be > 0, if failed is > 0) */
+	if (totalFailed > FILE_MAX_FAILURES)
+		totalUpdate(`Aborted due to too many failed deletions (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
+	else if (totalFailed > 0)
+		totalUpdate(`Failed to delete ${totalFailed} out of ${totalList.length} (Skipped: ${totalSkipped})`, false);
+	else {
+		_state.updateList(_state.list.filter((entry) => entry.name != name));
+		totalUpdate('Successfully removed!', true);
+	}
 }
 
 window.onload = () => {
@@ -1360,7 +1327,7 @@ window.onload = () => {
 				if (entry.isFile) {
 					try {
 						const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
-						return { kind: 'file', path, size: file.size };
+						return { kind: 'file', path, size: file.size, file };
 					}
 					catch (_) {
 						_state.pushStaticText(`Error processing dropped file [${path}]`, false);
@@ -1392,21 +1359,26 @@ window.onload = () => {
 				return { kind: 'directory', path, children };
 			};
 
-			(async () => {
-				const list = [];
+			/* collect the async list of entries (as awaiting may clear the transfer list) */
+			const entries = [], list = [];
+			for (const item of e.dataTransfer.items) {
+				const entry = item.webkitGetAsEntry();
+				if (entry == null)
+					continue;
 
-				/* collect the list of uploads and trigger them */
-				for (const item of e.dataTransfer.items) {
-					const entry = item.webkitGetAsEntry();
-					if (entry == null)
-						continue;
+				entries.push((async () => {
 					const temp = await unpackEntry(entry, '');
 					if (temp != null)
 						list.push(temp);
-				}
+				})());
+			}
+
+			/* collect the list of uploads and trigger them */
+			(async () => {
+				for (const entry of entries)
+					await entry;
 				_state.uploadContent(list, 'Dropped content');
 			})();
-
 		};
 
 		/* update the drop animations and add the size constraints */
