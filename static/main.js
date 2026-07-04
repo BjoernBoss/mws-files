@@ -471,7 +471,12 @@ _state.showEntryMenu = (entry) => {
 	content.children[1].onclick = () => {
 		if (!validateEntry(true)) return;
 		_state.updateOverlay('menu-overlay', null);
-		console.log('Download!');
+
+		/* request the actual download of the content */
+		const download = document.createElement('a');
+		download.href = `${_state.makePath(true, true, entry.name)}?kind=${entry.kind}&download=true`;
+		download.download = '';
+		download.click();
 	};
 
 	/* register the copy-url interaction */

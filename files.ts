@@ -4,6 +4,7 @@ import * as mws from "@bjoernboss/mws";
 import * as libCrypto from "crypto";
 import * as libFs from "fs";
 import * as libFsPromises from "fs/promises";
+import * as libStream from "stream";
 
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
@@ -19,6 +20,92 @@ interface DirListener {
 	timeout: NodeJS.Timeout | null;
 	close: () => void;
 	settled: boolean;
+}
+
+class Zipper {
+	private cleanup: (err: any) => void;
+	private sink: libStream.Writable;
+
+	public constructor(sink: libStream.Writable) {
+		this.cleanup = () => { };
+		this.sink = sink;
+		this.sink.once('error', (err: any) => this.cleanup(err));
+	}
+	private localFileHeader(modified: number, path: string, deflate: boolean): Buffer {
+		/* encode the path (without the leading slash) and check if it fits into the header */
+		const encoded = Buffer.from(path.substring(1), 'utf-8');
+		if (encoded.length > 65535) {
+			this.sink.destroy(new Error(`Path [${path}] cannot be encoded`));
+			return Buffer.alloc(0);
+		}
+		const out = Buffer.alloc(30 + encoded.length);
+		let offset = 0;
+
+		/* signature, version (6.3.0 => 630), generalPurposeFlag (bit3 for tailing data-descriptor; bit11 for utf-8), compression (0 = none; 8 = deflate) */
+		offset = out.writeUInt32LE(0x04034b50, offset);
+		offset = out.writeUInt16LE(630, offset);
+		offset = out.writeUInt16LE((0x01 << 3) | (0x01 << 11), offset);
+		offset = out.writeUInt16LE((deflate ? 0x08 : 0x00), offset);
+
+		/* last-modification time; last-modification date */
+		const date = new Date(modified);
+		offset = out.writeUInt16LE((date.getSeconds() / 2) | (date.getMinutes() << 5) | (date.getHours() << 11), offset);
+		offset = out.writeUInt16LE(date.getDate() | ((date.getMonth() + 1) << 5) | ((date.getFullYear() - 1980) << 9), offset);
+
+		/* crc32, compressed-size, uncompressed-size (all defaulted for data-descriptor mode) */
+		offset = out.writeUint32LE(0x00, offset);
+		offset = out.writeUint32LE(0xffffffff, offset);
+		offset = out.writeUint32LE(0xffffffff, offset);
+
+		/* write the file name length and extra field length out */
+		offset = out.writeUint16LE(encoded.length, offset);
+		offset = out.writeUint16LE(0, offset);
+
+		/* write the actual name out */
+		encoded.copy(out, offset);
+		return out;
+	}
+
+	public write(path: string, modified: number, data: libStream.Readable): Promise<void> {
+		return new Promise<void>(async (resolve, reject) => {
+			let settled = false;
+
+			/* register the error and cleanup listener */
+			this.cleanup = (err: any) => {
+				if (settled) return; settled = true;
+				data.destroy(err);
+				reject(err);
+			};
+			data.once('error', (err: any) => {
+				if (settled) return; settled = true;
+				this.sink.destroy(err);
+				reject(err);
+			});
+
+			/* write the local header out (ignore any errors, as they will propagate out through the error listener as well) */
+			await new Promise<void>((res) => this.sink.write(this.localFileHeader(modified, path, false), () => res));
+			if (settled || this.sink.destroyed) return;
+
+			/* pipe the data from the file through the transformer (to compute crc and sum up the size) */
+			let totalSize = 0;
+			const transform = new libStream.Transform({
+				transform: (chunk, _, cb) => {
+					if (settled) return cb(new Error('Writing already completed'));
+					totalSize += chunk.byteLength;
+					cb(null, chunk);
+				},
+				final: (cb) => {
+					if (settled) return cb(new Error('Writing already completed'));
+					if (totalLength == this.size)
+						this.cache.add(this.path, Buffer.concat(buffers), this.mtime, this.age);
+					cb(null);
+				}
+			});
+		});
+	}
+	public async close(): Promise<void> {
+
+	}
 }
 
 /**
@@ -46,6 +133,7 @@ export class FileShare extends mws.ModuleHandler {
 		entries: Record<string, { age: number, id: string }>;
 	};
 
+	/** [dataPath] is the path to all of the directories and files to be served (must be the path to a directory) */
 	constructor(dataPath: string) {
 		super('files');
 
@@ -75,11 +163,8 @@ export class FileShare extends mws.ModuleHandler {
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
 		const out: Record<string, DirEntry> = {};
 
-		/* let errors propagate outward */
-		const content = await libFsPromises.readdir(filePath);
-
-		/* collect all of the meta data about the directory (silently ignore errors) */
-		for (const name of content) {
+		/* collect all of the meta data about the directory (let errors propagate out; silently ignore errors) */
+		for (const name of await libFsPromises.readdir(filePath)) {
 			const childPath = `${filePath}/${name}`;
 			try {
 				const stats = await libFsPromises.stat(childPath);
@@ -97,10 +182,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		return out;
 	}
-	private async handleUpload(client: mws.ClientRequest, filePath: string, parent: string): Promise<void> {
-		const kind = client.url.searchParams.get('kind') ?? 'file';
-		if (kind != 'file' && kind != 'directory')
-			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
+	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: string, parent: string): Promise<void> {
 		const reservation = client.url.searchParams.get('reservation') ?? '';
 
 		try {
@@ -164,11 +246,7 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondConflict({ message: `Path already exists` });
 		}
 	}
-	private async handleDelete(client: mws.ClientRequest, filePath: string): Promise<void> {
-		const kind = client.url.searchParams.get('kind') ?? 'file';
-		if (kind != 'file' && kind != 'directory')
-			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
-
+	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: string): Promise<void> {
 		/* try to remove the object */
 		try {
 			if (kind == 'directory')
@@ -195,6 +273,92 @@ export class FileShare extends mws.ModuleHandler {
 			}
 			client.respondInternalError(`Failed to remove file [${filePath}]: ${err.message}`);
 		}
+	}
+	private async handleDownload(client: mws.ClientRequest, name: string, list: Record<string, DirEntry>): Promise<void> {
+		return client.respondInternalError('Not yet implemented');
+
+		/* prepare writing the directory content to a zip file */
+		const writer = client.respondData({ headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
+
+		/* create the zip wrapper and write the data */
+
+	}
+	private async handleFiles(client: mws.ClientRequest): Promise<void> {
+		const relativePath = client.getChildPath(Endpoints.files);
+		const filePath = this.fileStorage(relativePath);
+
+		/* ensure the request is using a supported method */
+		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
+		if (method == null)
+			return;
+
+		/* check if the method is allowed for the given endpoint */
+		if (relativePath == '/' && method != 'GET')
+			return client.respondForbidden({ message: 'Root cannot be modified' });
+
+		/* validate the request kind */
+		const kind = client.url.searchParams.get('kind');
+		if (kind != null && kind != 'file' && kind != 'directory')
+			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
+
+		/* check if the entry is to be deleted or uploaded */
+		if (method == 'POST')
+			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFilePath(relativePath)[0]);
+		if (method == 'DELETE')
+			return this.handleDelete(client, filePath, (kind ?? 'file'));
+
+		/* try to serve it as a file (root cannot be served as a file) */
+		if (kind == null || kind == 'file') {
+			if (relativePath != '/') {
+				const headers: Record<string, string> = { 'Kind': 'file' };
+
+				/* check if its supposed to be a download */
+				if (client.url.searchParams.get('download') == 'true') {
+					const [_, name, ext] = mws.splitFilePath(relativePath);
+					headers['Content-Disposition'] = `attachment; filename="${name}${ext}"`;
+				}
+
+				/* try to perform the actual serving (check freshness at all times, as the file might be changed) */
+				if (await client.tryRespondFile(filePath, { checkFreshness: true, headers }))
+					return;
+			}
+
+			/* check if a file-kind was expected */
+			if (kind == 'file')
+				return client.respondConflict({ message: `Path is not a file` });
+		}
+
+		/* try to read the directory state */
+		let list: Record<string, DirEntry> = {};
+		try { list = await this.fetchDirectoryList(filePath); } catch (err: any) {
+			if (err.code == 'ENOENT')
+				return client.respondNotFound();
+			if (err.code != 'ENOTDIR')
+				return client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
+
+			/* check if its an unsupported kind or if it was a file (if nothing was requested, must have been a race condition, just ignore) */
+			try {
+				const stats = await libFsPromises.stat(filePath);
+				if (kind == 'directory' && stats.isFile())
+					return client.respondConflict({ message: `Path is not a directory` });
+				if (!stats.isFile() && !stats.isDirectory())
+					this.warning(`Unsupported file-system object encountered: ${filePath}`);
+			} catch (_) { }
+			return client.respondNotFound();
+		}
+
+		/* check if the directory should be served in raw */
+		if (client.url.searchParams.get('raw') == 'true')
+			return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
+
+		/* check if the directory is to be downloaded */
+		if (client.url.searchParams.get('download') == 'true') {
+			const [_, name, ext] = mws.splitFilePath(relativePath);
+			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), list);
+		}
+
+		/* build the view for the directory */
+		return this.buildView(client, relativePath, list);
 	}
 	private async fetchBody(client: mws.ClientRequest, path: string): Promise<string | null> {
 		const fullPath = this.fileAssets(path);
@@ -349,9 +513,6 @@ export class FileShare extends mws.ModuleHandler {
 	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
 		client.trace(`Files handler for [${client.path}]`);
 
-		if (client.method != 'GET' && Math.random() < 0.05 && false)
-			return client.respondInternalError('Random failure');
-
 		/* check if its just static content to be served */
 		if (client.isInsideOf(Endpoints.static)) {
 			if (client.requireMethod('GET') != null)
@@ -359,7 +520,7 @@ export class FileShare extends mws.ModuleHandler {
 			return;
 		}
 
-		/* check if its one of the listener */
+		/* check if its one of the listener (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.sockets)) {
 			const relativePath = client.getChildPath(Endpoints.sockets);
 
@@ -372,61 +533,8 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		/* check if its a request for the files API (allow root itself for reading it) */
-		if (!client.isSubPathOf(Endpoints.files))
-			return;
-		const relativePath = client.getChildPath(Endpoints.files);
-		const filePath = this.fileStorage(relativePath);
-
-		/* ensure the request is using a supported method */
-		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
-		if (method == null)
-			return;
-
-		/* check if the method is allowed for the given endpoint */
-		if (relativePath == '/' && method != 'GET')
-			return client.respondForbidden({ message: 'Root cannot be modified' });
-
-		/* check if the entry is to be deleted or uploaded */
-		if (method == 'DELETE')
-			return this.handleDelete(client, filePath);
-		else if (method == 'POST')
-			return this.handleUpload(client, filePath, mws.splitFilePath(relativePath)[0]);
-
-		try {
-			const kind = client.url.searchParams.get('kind');
-			const stats = await libFsPromises.stat(filePath);
-
-			/* check if a file is to be served */
-			if (stats.isFile()) {
-				if (kind != null && kind != 'file')
-					return client.respondConflict({ message: `Path is not a file` });
-				if (!await client.tryRespondFile(filePath, { checkFreshness: true, headers: { 'Kind': 'file' } }))
-					client.respondNotFound();
-				return;
-			}
-
-			/* check if its an unknown type */
-			if (!stats.isDirectory()) {
-				this.warning(`Unsupported file-system object encountered: ${filePath}`);
-				return client.respondNotFound();
-			}
-
-			/* validate the requested kind and fetch the actual list */
-			if (kind != null && kind != 'directory')
-				return client.respondConflict({ message: `Path is not a directory` });
-			const list = await this.fetchDirectoryList(filePath);
-
-			/* check if the directory should be served in raw */
-			if (client.url.searchParams.get('raw') == 'true')
-				return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
-
-			/* build the view for the directory */
-			await this.buildView(client, relativePath, list);
-		} catch (err: any) {
-			if (err.code != 'ENOENT')
-				return client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
-			client.respondNotFound();
-		}
+		if (client.isSubPathOf(Endpoints.files))
+			return this.handleFiles(client);
 	}
 	protected override async handleStop(): Promise<void> {
 		/* close all sockets (no new sockets can arrive anymore once the stop-handler has started) */
