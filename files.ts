@@ -5,6 +5,7 @@ import * as libCrypto from "crypto";
 import * as libFs from "fs";
 import * as libFsPromises from "fs/promises";
 import * as libStream from "stream";
+import * as libZlib from "zlib";
 
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
@@ -23,50 +24,145 @@ interface DirListener {
 }
 
 class Zipper {
+	/* system: custom/undefined; zip: 6.3.0 => 630 */
+	private static SystemVersion: number = 96;
+	private static ZipVersion: number = 630;
+	private static crc32Table: Uint32Array | null = null;
+	private static crc32InitTable(): void {
+		Zipper.crc32Table = new Uint32Array(256);
+
+		let crc32 = 1;
+		for (let i = 128; i; i >>= 1) {
+			crc32 = (crc32 >>> 1) ^ ((crc32 & 0x01) ? 0xedb88320 : 0);
+			for (let j = 0; j < 256; j += 2 * i)
+				Zipper.crc32Table[i + j] = crc32 ^ Zipper.crc32Table[j];
+		}
+	}
+	private static crc32Update(crc32: number, chunk: Buffer): number {
+		for (const byte of chunk)
+			crc32 = Zipper.crc32Table![(crc32 ^= byte) & 0xff] ^ (crc32 >>> 8);
+		return crc32;
+	}
+
 	private cleanup: (err: any) => void;
 	private sink: libStream.Writable;
+	private fileOffset: number;
+	private entries: Buffer[];
+	private closed: boolean;
 
 	public constructor(sink: libStream.Writable) {
 		this.cleanup = () => { };
 		this.sink = sink;
 		this.sink.once('error', (err: any) => this.cleanup(err));
-	}
-	private localFileHeader(modified: number, path: string, deflate: boolean): Buffer {
-		/* encode the path (without the leading slash) and check if it fits into the header */
-		const encoded = Buffer.from(path.substring(1), 'utf-8');
-		if (encoded.length > 65535) {
-			this.sink.destroy(new Error(`Path [${path}] cannot be encoded`));
-			return Buffer.alloc(0);
-		}
-		const out = Buffer.alloc(30 + encoded.length);
-		let offset = 0;
+		this.fileOffset = 0;
+		this.entries = [];
+		this.closed = false;
 
-		/* signature, version (6.3.0 => 630), generalPurposeFlag (bit3 for tailing data-descriptor; bit11 for utf-8), compression (0 = none; 8 = deflate) */
-		offset = out.writeUInt32LE(0x04034b50, offset);
-		offset = out.writeUInt16LE(630, offset);
-		offset = out.writeUInt16LE((0x01 << 3) | (0x01 << 11), offset);
-		offset = out.writeUInt16LE((deflate ? 0x08 : 0x00), offset);
+		/* check if the table needs to be initialized */
+		if (Zipper.crc32Table == null)
+			Zipper.crc32InitTable();
+	}
+
+	private addCommonFileData(buffer: Buffer, offset: number, modified: number, deflate: boolean, descriptor: boolean): number {
+		/* zip version, generalPurposeFlag (bit3 for tailing data-descriptor; bit11 for utf-8), compression (0 = none; 8 = deflate) */
+		offset = buffer.writeUInt16LE(Zipper.ZipVersion, offset);
+		offset = buffer.writeUInt16LE((descriptor ? (0x01 << 3) : 0) | (0x01 << 11), offset);
+		offset = buffer.writeUInt16LE((deflate ? 0x08 : 0x00), offset);
 
 		/* last-modification time; last-modification date */
 		const date = new Date(modified);
-		offset = out.writeUInt16LE((date.getSeconds() / 2) | (date.getMinutes() << 5) | (date.getHours() << 11), offset);
-		offset = out.writeUInt16LE(date.getDate() | ((date.getMonth() + 1) << 5) | ((date.getFullYear() - 1980) << 9), offset);
+		offset = buffer.writeUInt16LE((date.getSeconds() / 2) | (date.getMinutes() << 5) | (date.getHours() << 11), offset);
+		offset = buffer.writeUInt16LE(date.getDate() | ((date.getMonth() + 1) << 5) | ((date.getFullYear() - 1980) << 9), offset);
+		return offset;
+	}
+	private localFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean): Buffer {
+		/* incase of it not being a directory, the size is not yet known, and must be assumed to surpass 32bits) */
+		const out = Buffer.alloc(30 + (directory ? 0 : 20) + fileName.length);
+		let offset = 0;
 
-		/* crc32, compressed-size, uncompressed-size (all defaulted for data-descriptor mode) */
+		/* signature (local file header) and the common file-entry data, which are shared with the central directory file header */
+		offset = out.writeUInt32LE(0x04034b50, offset);
+		offset = this.addCommonFileData(out, offset, modified, deflate, true);
+
+		/* crc32, compressed-size, uncompressed-size (all defaulted for data-descriptor mode; set size's to 0xffffffff to indicate zip64) */
 		offset = out.writeUint32LE(0x00, offset);
-		offset = out.writeUint32LE(0xffffffff, offset);
-		offset = out.writeUint32LE(0xffffffff, offset);
+		offset = out.writeUint32LE((directory ? 0x00 : 0xffffffff), offset);
+		offset = out.writeUint32LE((directory ? 0x00 : 0xffffffff), offset);
 
 		/* write the file name length and extra field length out */
-		offset = out.writeUint16LE(encoded.length, offset);
-		offset = out.writeUint16LE(0, offset);
+		offset = out.writeUint16LE(fileName.length, offset);
+		offset = out.writeUint16LE((directory ? 0 : 20), offset);
 
-		/* write the actual name out */
-		encoded.copy(out, offset);
+		/* write the actual name out and add the empty extra fields to indicate 64bit
+		*	support (not yet used, but required to indicate that data descriptor is zip64) */
+		fileName.copy(out, offset);
+		offset += fileName.length;
+		if (!directory) {
+			offset += out.writeUInt16LE(0x0001, offset);
+			offset += out.writeUint16LE(16, offset);
+			offset += out.writeBigUint64LE(BigInt(0), offset);
+			offset += out.writeBigUint64LE(BigInt(0), offset);
+		}
+		return out;
+	}
+	private addCentralDirectoryFileHeader(modified: number, fileName: Buffer, deflate: boolean, crc32: number, compressed: number, uncompressed: number, localHeader: number): void {
+		/* allocate the necessary buffer */
+		const ofSize = (uncompressed >= 0xffffffff), ofCompressed = (compressed >= 0xffffffff), ofOffset = (localHeader >= 0xffffffff);
+		const extSize = ((ofSize || ofCompressed || ofOffset) ? 4 + 8 * ((ofSize ? 1 : 0) + (ofCompressed ? 1 : 0) + (ofOffset ? 1 : 0)) : 0);
+		const out = Buffer.alloc(46 + fileName.length + extSize);
+		let offset = 0;
+
+		/* signature (central directory file header), system version, and the common file-entry data, which are shared with the local file header */
+		offset = out.writeUInt32LE(0x02014b50, offset);
+		offset = out.writeUInt16LE(Zipper.SystemVersion, offset);
+		offset = this.addCommonFileData(out, offset, modified, deflate, false);
+
+		/* checksum, compressed-size, uncompressed-size */
+		offset += out.writeUInt32LE(crc32, offset);
+		offset += out.writeUInt32LE(ofCompressed ? 0xffffffff : compressed, offset);
+		offset += out.writeUInt32LE(ofSize ? 0xffffffff : uncompressed, offset);
+
+		/* file-name length, extra-field length, comment length, disk#, internal attr., external attr., local header offset */
+		offset += out.writeUInt16LE(fileName.length, offset);
+		offset += out.writeUInt16LE(extSize, offset);
+		offset += out.writeUInt16LE(0, offset);
+		offset += out.writeUInt16LE(0, offset);
+		offset += out.writeUInt16LE(0, offset);
+		offset += out.writeUInt32LE(0, offset);
+		offset += out.writeUInt32LE(ofOffset ? 0xffffffff : localHeader, offset);
+
+		/* write the actual name out and add the extra fields */
+		fileName.copy(out, offset);
+		offset += fileName.length;
+		if (extSize > 0) {
+			offset += out.writeUInt16LE(0x0001, offset);
+			offset += out.writeUint16LE(extSize - 4, offset);
+			if (ofSize)
+				offset += out.writeBigUint64LE(BigInt(uncompressed), offset);
+			if (ofCompressed)
+				offset += out.writeBigUint64LE(BigInt(compressed), offset);
+			if (ofOffset)
+				offset += out.writeBigUint64LE(BigInt(localHeader), offset);
+		}
+
+		/* write the buffer to the list */
+		this.entries.push(out);
+	}
+	private dataDescriptor(crc32: number, compressed: number, uncompressed: number): Buffer {
+		const out = Buffer.alloc(24);
+		let offset = 0;
+
+		/* signature (data descriptor), crc32, compressed size, uncompressed size */
+		offset = out.writeUInt32LE(0x08074b50, offset);
+		offset = out.writeUint32LE(crc32, offset);
+		offset = out.writeBigUint64LE(BigInt(compressed), offset);
+		offset = out.writeBigUint64LE(BigInt(uncompressed), offset);
 		return out;
 	}
 
-	public write(path: string, modified: number, data: libStream.Readable): Promise<void> {
+	public write(path: string, modified: number, data: libStream.Readable, compress: boolean): Promise<void> {
+		if (this.closed)
+			throw new Error(`End of zip alreaedy reached`);
 		return new Promise<void>(async (resolve, reject) => {
 			let settled = false;
 
@@ -82,29 +178,165 @@ class Zipper {
 				reject(err);
 			});
 
-			/* write the local header out (ignore any errors, as they will propagate out through the error listener as well) */
-			await new Promise<void>((res) => this.sink.write(this.localFileHeader(modified, path, false), () => res));
-			if (settled || this.sink.destroyed) return;
+			/* encode the path (without the leading slash) and check if it fits into the header (errors will be handled by error callback) */
+			const fileName = Buffer.from(path.substring(1), 'utf-8');
+			if (fileName.length > 65535)
+				return this.sink.destroy(new Error(`Path [${path}] cannot be encoded`));
 
-			/* pipe the data from the file through the transformer (to compute crc and sum up the size) */
-			let totalSize = 0;
-			const transform = new libStream.Transform({
-				transform: (chunk, _, cb) => {
-					if (settled) return cb(new Error('Writing already completed'));
-					totalSize += chunk.byteLength;
-					cb(null, chunk);
-				},
-				final: (cb) => {
-					if (settled) return cb(new Error('Writing already completed'));
-					if (totalLength == this.size)
-						this.cache.add(this.path, Buffer.concat(buffers), this.mtime, this.age);
-					cb(null);
+			/* write the local header out (errors will be handled by error callback) */
+			const localHeader = this.localFileHeader(modified, fileName, compress, false);
+			await new Promise<void>((res) => this.sink.write(localHeader, () => res()));
+			if (this.sink.destroyed) return;
+
+			/* write the actual data to the sink (errors will be handled by error callback) */
+			let totalSize = 0, checksum = 0xffffffff;
+			let totalCompressed: number | null = null;
+			await new Promise<void>((res) => {
+				/* create the accumulate transformer to calculate the total size and checksum */
+				let stream = data.pipe(new libStream.Transform({
+					transform: (chunk, _, cb) => {
+						totalSize += chunk.byteLength;
+						checksum = Zipper.crc32Update(checksum, chunk);
+						cb(null, chunk);
+					}
+				}));
+
+				/* check if the data should be piped through the compression */
+				if (compress) {
+					totalCompressed = 0;
+					const encoder = libZlib.createDeflate();
+					const compressed = new libStream.Transform({
+						transform: (chunk, _, cb) => {
+							totalCompressed += chunk.byteLength;
+							cb(null, chunk);
+						}
+					});
+
+					/* pipe the streams together and register relevant error handlers (to ensure the promise is resolved) */
+					stream = stream.pipe(encoder).pipe(compressed);
+					encoder.once('error', (e) => this.sink.destroy(new Error(`Encoding error: ${e.message}`)));
+					data.once('error', (e) => encoder.destroy(e));
 				}
+
+				/* link the full pipeline together and ensure the promise is resolved at some point */
+				stream.pipe(this.sink, { end: false });
+				stream.once('end', () => {
+					data.unpipe();
+					stream.unpipe();
+					res();
+				});
+				data.once('error', () => stream.end());
 			});
+			if (this.sink.destroyed) return;
+			if (totalCompressed == null)
+				totalCompressed = totalSize;
+
+			/* finalize the checksum and write the data descriptor out (errors will be handled by error callback) */
+			checksum = (checksum ^ 0xffffffff);
+			const dataDescriptor = this.dataDescriptor(checksum, totalCompressed, totalSize);
+			await new Promise<void>((res) => this.sink.write(dataDescriptor, () => res()));
+			if (this.sink.destroyed) return;
+
+			/* add central directory file header and update the file offset */
+			this.addCentralDirectoryFileHeader(modified, fileName, compress, checksum, totalCompressed, totalSize, this.fileOffset);
+			this.fileOffset += localHeader.byteLength + totalCompressed + dataDescriptor.byteLength;
+			settled = true;
+			resolve();
 		});
 	}
-	public async close(): Promise<void> {
+	public directory(path: string, modified: number): Promise<void> {
+		if (this.closed)
+			throw new Error(`End of zip alreaedy reached`);
+		return new Promise<void>(async (resolve, reject) => {
+			let settled = false;
 
+			/* register the error and cleanup listener */
+			this.cleanup = (err: any) => {
+				if (settled) return; settled = true;
+				reject(err);
+			};
+
+			/* encode the path (without the leading slash but with trailing slash) and check
+			*	if it fits into the header (errors will be handled by error callback) */
+			const fileName = Buffer.from(`${path.substring(1)}/`, 'utf-8');
+			if (fileName.length > 65535)
+				return this.sink.destroy(new Error(`Path [${path}/] cannot be encoded`));
+
+			/* write the local header out (errors will be handled by error callback) */
+			const localHeader = this.localFileHeader(modified, fileName, false, true);
+			await new Promise<void>((res) => this.sink.write(localHeader, () => res()));
+			if (this.sink.destroyed) return;
+
+			/* add central directory file header and update the file offset */
+			this.addCentralDirectoryFileHeader(modified, fileName, false, 0, 0, 0, this.fileOffset);
+			this.fileOffset += localHeader.byteLength;
+			settled = true;
+			resolve();
+		});
+	}
+	public close(): Promise<void> {
+		if (this.closed)
+			throw new Error(`End of zip alreaedy reached`);
+		this.closed = true;
+
+		return new Promise<void>(async (resolve, reject) => {
+			let settled = false;
+
+			/* register the error and cleanup listener */
+			this.cleanup = (err: any) => {
+				if (settled) return; settled = true;
+				reject(err);
+			};
+
+			/* write out the central directory (errors will be handled by error callback) */
+			const central = Buffer.concat(this.entries);
+			await new Promise<void>((res) => this.sink.write(central, () => res()));
+			if (this.sink.destroyed) return;
+
+			/* allocate the buffer for the zip64 end of central directory record & locator and the original end */
+			const buffer = Buffer.alloc(56 + 20 + 22);
+			let offset = 0;
+
+			/* record: signature, sizeof (header - initial fields), system version, zip version */
+			offset += buffer.writeUInt32LE(0x06064b50, offset);
+			offset += buffer.writeBigUInt64LE(BigInt(buffer.length - 12), offset);
+			offset += buffer.writeUInt16LE(Zipper.SystemVersion, offset);
+			offset += buffer.writeUInt16LE(Zipper.ZipVersion, offset);
+
+			/* record: disk#, start disk#, entries on this disk, total entries */
+			offset += buffer.writeUInt32LE(0, offset);
+			offset += buffer.writeUInt32LE(0, offset);
+			offset += buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
+			offset += buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
+
+			/* record: size central-directory, offset central-directory */
+			offset += buffer.writeBigUInt64LE(BigInt(central.byteLength), offset);
+			offset += buffer.writeBigUInt64LE(BigInt(this.fileOffset), offset);
+
+			/* locator: signature, start disk#, offset of zip64 end of central directory record, total disk# */
+			offset += buffer.writeUInt32LE(0x07064b50, offset);
+			offset += buffer.writeUInt32LE(0, offset);
+			offset += buffer.writeBigUInt64LE(BigInt(this.fileOffset + central.byteLength), offset);
+			offset += buffer.writeUInt32LE(1, offset);
+
+			/* original: signature, disk#, start disk#, entries on disk, total entries */
+			offset += buffer.writeUInt32LE(0x06054b50, offset);
+			offset += buffer.writeUInt16LE(0xffff, offset);
+			offset += buffer.writeUInt16LE(0xffff, offset);
+			offset += buffer.writeUInt16LE(0xffff, offset);
+			offset += buffer.writeUInt16LE(0xffff, offset);
+
+			/* original: sizeof central directory, offset central-directory, comment-length */
+			offset += buffer.writeUInt32LE(0xffffffff, offset);
+			offset += buffer.writeUInt32LE(0xffffffff, offset);
+			offset += buffer.writeUInt16LE(0, offset);
+
+			/* write the end of central directory (errors will be handled by error callback) */
+			await new Promise<void>((res) => this.sink.end(buffer, () => res()));
+			if (this.sink.destroyed) return;
+			settled = true;
+			resolve();
+		});
 	}
 }
 
