@@ -12,7 +12,7 @@ const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
 
 interface DirEntry {
-	kind: string;
+	kind: 'file' | 'directory';
 	size: number;
 	modified: number;
 }
@@ -85,27 +85,27 @@ class Zipper {
 		offset = this.addCommonFileData(out, offset, modified, deflate, true);
 
 		/* crc32, compressed-size, uncompressed-size (all defaulted for data-descriptor mode; set size's to 0xffffffff to indicate zip64) */
-		offset = out.writeUint32LE(0x00, offset);
-		offset = out.writeUint32LE((directory ? 0x00 : 0xffffffff), offset);
-		offset = out.writeUint32LE((directory ? 0x00 : 0xffffffff), offset);
+		offset = out.writeUInt32LE(0x00, offset);
+		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
+		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
 
 		/* write the file name length and extra field length out */
-		offset = out.writeUint16LE(fileName.length, offset);
-		offset = out.writeUint16LE((directory ? 0 : 20), offset);
+		offset = out.writeUInt16LE(fileName.length, offset);
+		offset = out.writeUInt16LE((directory ? 0 : 20), offset);
 
 		/* write the actual name out and add the empty extra fields to indicate 64bit
 		*	support (not yet used, but required to indicate that data descriptor is zip64) */
 		fileName.copy(out, offset);
 		offset += fileName.length;
 		if (!directory) {
-			offset += out.writeUInt16LE(0x0001, offset);
-			offset += out.writeUint16LE(16, offset);
-			offset += out.writeBigUint64LE(BigInt(0), offset);
-			offset += out.writeBigUint64LE(BigInt(0), offset);
+			offset = out.writeUInt16LE(0x0001, offset);
+			offset = out.writeUInt16LE(16, offset);
+			offset = out.writeBigUInt64LE(BigInt(0), offset);
+			offset = out.writeBigUInt64LE(BigInt(0), offset);
 		}
 		return out;
 	}
-	private addCentralDirectoryFileHeader(modified: number, fileName: Buffer, deflate: boolean, crc32: number, compressed: number, uncompressed: number, localHeader: number): void {
+	private addCentralDirectoryFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean, crc32: number, compressed: number, uncompressed: number, localHeader: number): void {
 		/* allocate the necessary buffer */
 		const ofSize = (uncompressed >= 0xffffffff), ofCompressed = (compressed >= 0xffffffff), ofOffset = (localHeader >= 0xffffffff);
 		const extSize = ((ofSize || ofCompressed || ofOffset) ? 4 + 8 * ((ofSize ? 1 : 0) + (ofCompressed ? 1 : 0) + (ofOffset ? 1 : 0)) : 0);
@@ -115,34 +115,34 @@ class Zipper {
 		/* signature (central directory file header), system version, and the common file-entry data, which are shared with the local file header */
 		offset = out.writeUInt32LE(0x02014b50, offset);
 		offset = out.writeUInt16LE(Zipper.SystemVersion, offset);
-		offset = this.addCommonFileData(out, offset, modified, deflate, false);
+		offset = this.addCommonFileData(out, offset, modified, deflate, directory);
 
 		/* checksum, compressed-size, uncompressed-size */
-		offset += out.writeUInt32LE(crc32, offset);
-		offset += out.writeUInt32LE(ofCompressed ? 0xffffffff : compressed, offset);
-		offset += out.writeUInt32LE(ofSize ? 0xffffffff : uncompressed, offset);
+		offset = out.writeUInt32LE(crc32, offset);
+		offset = out.writeUInt32LE(ofCompressed ? 0xffffffff : compressed, offset);
+		offset = out.writeUInt32LE(ofSize ? 0xffffffff : uncompressed, offset);
 
 		/* file-name length, extra-field length, comment length, disk#, internal attr., external attr., local header offset */
-		offset += out.writeUInt16LE(fileName.length, offset);
-		offset += out.writeUInt16LE(extSize, offset);
-		offset += out.writeUInt16LE(0, offset);
-		offset += out.writeUInt16LE(0, offset);
-		offset += out.writeUInt16LE(0, offset);
-		offset += out.writeUInt32LE(0, offset);
-		offset += out.writeUInt32LE(ofOffset ? 0xffffffff : localHeader, offset);
+		offset = out.writeUInt16LE(fileName.length, offset);
+		offset = out.writeUInt16LE(extSize, offset);
+		offset = out.writeUInt16LE(0, offset);
+		offset = out.writeUInt16LE(0, offset);
+		offset = out.writeUInt16LE(0, offset);
+		offset = out.writeUInt32LE(0, offset);
+		offset = out.writeUInt32LE(ofOffset ? 0xffffffff : localHeader, offset);
 
 		/* write the actual name out and add the extra fields */
 		fileName.copy(out, offset);
 		offset += fileName.length;
 		if (extSize > 0) {
-			offset += out.writeUInt16LE(0x0001, offset);
-			offset += out.writeUint16LE(extSize - 4, offset);
+			offset = out.writeUInt16LE(0x0001, offset);
+			offset = out.writeUInt16LE(extSize - 4, offset);
 			if (ofSize)
-				offset += out.writeBigUint64LE(BigInt(uncompressed), offset);
+				offset = out.writeBigUInt64LE(BigInt(uncompressed), offset);
 			if (ofCompressed)
-				offset += out.writeBigUint64LE(BigInt(compressed), offset);
+				offset = out.writeBigUInt64LE(BigInt(compressed), offset);
 			if (ofOffset)
-				offset += out.writeBigUint64LE(BigInt(localHeader), offset);
+				offset = out.writeBigUInt64LE(BigInt(localHeader), offset);
 		}
 
 		/* write the buffer to the list */
@@ -154,13 +154,13 @@ class Zipper {
 
 		/* signature (data descriptor), crc32, compressed size, uncompressed size */
 		offset = out.writeUInt32LE(0x08074b50, offset);
-		offset = out.writeUint32LE(crc32, offset);
-		offset = out.writeBigUint64LE(BigInt(compressed), offset);
-		offset = out.writeBigUint64LE(BigInt(uncompressed), offset);
+		offset = out.writeUInt32LE(crc32, offset);
+		offset = out.writeBigUInt64LE(BigInt(compressed), offset);
+		offset = out.writeBigUInt64LE(BigInt(uncompressed), offset);
 		return out;
 	}
 
-	public write(path: string, modified: number, data: libStream.Readable, compress: boolean): Promise<void> {
+	public file(path: string, modified: number, data: libStream.Readable, compress: boolean): Promise<void> {
 		if (this.closed)
 			throw new Error(`End of zip alreaedy reached`);
 		return new Promise<void>(async (resolve, reject) => {
@@ -231,14 +231,14 @@ class Zipper {
 			if (totalCompressed == null)
 				totalCompressed = totalSize;
 
-			/* finalize the checksum and write the data descriptor out (errors will be handled by error callback) */
-			checksum = (checksum ^ 0xffffffff);
+			/* finalize the checksum and ensure its unsigned and write the data descriptor out (errors will be handled by error callback) */
+			checksum = (checksum ^ 0xffffffff) >>> 0;
 			const dataDescriptor = this.dataDescriptor(checksum, totalCompressed, totalSize);
 			await new Promise<void>((res) => this.sink.write(dataDescriptor, () => res()));
 			if (this.sink.destroyed) return;
 
 			/* add central directory file header and update the file offset */
-			this.addCentralDirectoryFileHeader(modified, fileName, compress, checksum, totalCompressed, totalSize, this.fileOffset);
+			this.addCentralDirectoryFileHeader(modified, fileName, compress, false, checksum, totalCompressed, totalSize, this.fileOffset);
 			this.fileOffset += localHeader.byteLength + totalCompressed + dataDescriptor.byteLength;
 			settled = true;
 			resolve();
@@ -268,7 +268,7 @@ class Zipper {
 			if (this.sink.destroyed) return;
 
 			/* add central directory file header and update the file offset */
-			this.addCentralDirectoryFileHeader(modified, fileName, false, 0, 0, 0, this.fileOffset);
+			this.addCentralDirectoryFileHeader(modified, fileName, false, true, 0, 0, 0, this.fileOffset);
 			this.fileOffset += localHeader.byteLength;
 			settled = true;
 			resolve();
@@ -298,44 +298,45 @@ class Zipper {
 			let offset = 0;
 
 			/* record: signature, sizeof (header - initial fields), system version, zip version */
-			offset += buffer.writeUInt32LE(0x06064b50, offset);
-			offset += buffer.writeBigUInt64LE(BigInt(buffer.length - 12), offset);
-			offset += buffer.writeUInt16LE(Zipper.SystemVersion, offset);
-			offset += buffer.writeUInt16LE(Zipper.ZipVersion, offset);
+			offset = buffer.writeUInt32LE(0x06064b50, offset);
+			offset = buffer.writeBigUInt64LE(BigInt(buffer.length - 12), offset);
+			offset = buffer.writeUInt16LE(Zipper.SystemVersion, offset);
+			offset = buffer.writeUInt16LE(Zipper.ZipVersion, offset);
 
 			/* record: disk#, start disk#, entries on this disk, total entries */
-			offset += buffer.writeUInt32LE(0, offset);
-			offset += buffer.writeUInt32LE(0, offset);
-			offset += buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
-			offset += buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
+			offset = buffer.writeUInt32LE(0, offset);
+			offset = buffer.writeUInt32LE(0, offset);
+			offset = buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
+			offset = buffer.writeBigUInt64LE(BigInt(this.entries.length), offset);
 
 			/* record: size central-directory, offset central-directory */
-			offset += buffer.writeBigUInt64LE(BigInt(central.byteLength), offset);
-			offset += buffer.writeBigUInt64LE(BigInt(this.fileOffset), offset);
+			offset = buffer.writeBigUInt64LE(BigInt(central.byteLength), offset);
+			offset = buffer.writeBigUInt64LE(BigInt(this.fileOffset), offset);
 
 			/* locator: signature, start disk#, offset of zip64 end of central directory record, total disk# */
-			offset += buffer.writeUInt32LE(0x07064b50, offset);
-			offset += buffer.writeUInt32LE(0, offset);
-			offset += buffer.writeBigUInt64LE(BigInt(this.fileOffset + central.byteLength), offset);
-			offset += buffer.writeUInt32LE(1, offset);
+			offset = buffer.writeUInt32LE(0x07064b50, offset);
+			offset = buffer.writeUInt32LE(0, offset);
+			offset = buffer.writeBigUInt64LE(BigInt(this.fileOffset + central.byteLength), offset);
+			offset = buffer.writeUInt32LE(1, offset);
 
 			/* original: signature, disk#, start disk#, entries on disk, total entries */
-			offset += buffer.writeUInt32LE(0x06054b50, offset);
-			offset += buffer.writeUInt16LE(0xffff, offset);
-			offset += buffer.writeUInt16LE(0xffff, offset);
-			offset += buffer.writeUInt16LE(0xffff, offset);
-			offset += buffer.writeUInt16LE(0xffff, offset);
+			offset = buffer.writeUInt32LE(0x06054b50, offset);
+			offset = buffer.writeUInt16LE(0xffff, offset);
+			offset = buffer.writeUInt16LE(0xffff, offset);
+			offset = buffer.writeUInt16LE(0xffff, offset);
+			offset = buffer.writeUInt16LE(0xffff, offset);
 
 			/* original: sizeof central directory, offset central-directory, comment-length */
-			offset += buffer.writeUInt32LE(0xffffffff, offset);
-			offset += buffer.writeUInt32LE(0xffffffff, offset);
-			offset += buffer.writeUInt16LE(0, offset);
+			offset = buffer.writeUInt32LE(0xffffffff, offset);
+			offset = buffer.writeUInt32LE(0xffffffff, offset);
+			offset = buffer.writeUInt16LE(0, offset);
 
 			/* write the end of central directory (errors will be handled by error callback) */
 			await new Promise<void>((res) => this.sink.end(buffer, () => res()));
-			if (this.sink.destroyed) return;
-			settled = true;
-			resolve();
+			if (!settled) {
+				settled = true;
+				resolve();
+			}
 		});
 	}
 }
@@ -506,14 +507,46 @@ export class FileShare extends mws.ModuleHandler {
 			client.respondInternalError(`Failed to remove file [${filePath}]: ${err.message}`);
 		}
 	}
-	private async handleDownload(client: mws.ClientRequest, name: string, list: Record<string, DirEntry>): Promise<void> {
-		return client.respondInternalError('Not yet implemented');
+	private async handleDownload(client: mws.ClientRequest, name: string, basePath: string, list: Record<string, DirEntry>): Promise<void> {
+		client.trace(`Zipping directory [${this.fileStorage(basePath)}]`);
 
-		/* prepare writing the directory content to a zip file */
-		const writer = client.respondData({ headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
+		/* prepare writing the directory content to a zip file and create the zipper (automatically handles errors and closes connection) */
+		const writer = client.respondData({ media: mws.Media.Zip, headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
+		const zipper = new Zipper(writer);
 
-		/* create the zip wrapper and write the data */
+		/* helper to process directory (let errors propagate out) */
+		const process = async (path: string, entries: Record<string, DirEntry>): Promise<void> => {
+			for (const name in entries) {
+				const entry = entries[name], relativePath = `${path}/${name}`;
+				const absolutePath = this.fileStorage(`${basePath}${relativePath}`);
 
+				/* check if a file is to be added (skip removed files) */
+				if (entry.kind == 'file') {
+					const stream = this.cache.stream(absolutePath, { checkFreshness: true });
+					if (stream != null) {
+						client.trace(`Adding [${absolutePath}] to zip at [${relativePath}]`);
+						await zipper.file(relativePath, entry.modified, stream, mws.lookupMediaTypeFromFile(name)?.compressible ?? false);
+					}
+				}
+
+				/* add the directory entry and process the children */
+				else {
+					client.trace(`Adding [${absolutePath}] to zip at [${relativePath}]`);
+					await zipper.directory(relativePath, entry.modified);
+					const children = await this.fetchDirectoryList(absolutePath);
+					await process(relativePath, children);
+				}
+			}
+		};
+
+		/* process the root directory and close the zipper */
+		try {
+			await process('', list);
+			await zipper.close();
+		}
+		catch (err: any) {
+			this.error(`Failed to zip directory [${this.fileStorage(basePath)}]: ${err.message}`);
+		}
 	}
 	private async handleFiles(client: mws.ClientRequest): Promise<void> {
 		const relativePath = client.getChildPath(Endpoints.files);
@@ -586,7 +619,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if the directory is to be downloaded */
 		if (client.url.searchParams.get('download') == 'true') {
 			const [_, name, ext] = mws.splitFilePath(relativePath);
-			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), list);
+			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), relativePath, list);
 		}
 
 		/* build the view for the directory */
