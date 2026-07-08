@@ -24,9 +24,9 @@ interface DirListener {
 }
 
 class Zipper {
-	/* system: custom/undefined; zip: 6.3.0 => 630 */
+	/* system: custom/undefined; zip: 6.3 => 63 */
 	private static SystemVersion: number = 96;
-	private static ZipVersion: number = 630;
+	private static ZipVersion: number = 63;
 	private static crc32Table: Uint32Array | null = null;
 	private static crc32InitTable(): void {
 		Zipper.crc32Table = new Uint32Array(256);
@@ -77,32 +77,23 @@ class Zipper {
 	}
 	private localFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean): Buffer {
 		/* incase of it not being a directory, the size is not yet known, and must be assumed to surpass 32bits) */
-		const out = Buffer.alloc(30 + (directory ? 0 : 20) + fileName.length);
+		const out = Buffer.alloc(30 + fileName.length);
 		let offset = 0;
 
 		/* signature (local file header) and the common file-entry data, which are shared with the central directory file header */
 		offset = out.writeUInt32LE(0x04034b50, offset);
-		offset = this.addCommonFileData(out, offset, modified, deflate, true);
+		offset = this.addCommonFileData(out, offset, modified, deflate, !directory);
 
 		/* crc32, compressed-size, uncompressed-size (all defaulted for data-descriptor mode; set size's to 0xffffffff to indicate zip64) */
 		offset = out.writeUInt32LE(0x00, offset);
 		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
 		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
 
-		/* write the file name length and extra field length out */
+		/* write the file name length and extra field length out (no need for extra fields, as the data descriptor
+		*	will hold the actual large size; already encoded by it being 0xffffffff) and add the filename itself */
 		offset = out.writeUInt16LE(fileName.length, offset);
-		offset = out.writeUInt16LE((directory ? 0 : 20), offset);
-
-		/* write the actual name out and add the empty extra fields to indicate 64bit
-		*	support (not yet used, but required to indicate that data descriptor is zip64) */
+		offset = out.writeUInt16LE(0, offset);
 		fileName.copy(out, offset);
-		offset += fileName.length;
-		if (!directory) {
-			offset = out.writeUInt16LE(0x0001, offset);
-			offset = out.writeUInt16LE(16, offset);
-			offset = out.writeBigUInt64LE(BigInt(0), offset);
-			offset = out.writeBigUInt64LE(BigInt(0), offset);
-		}
 		return out;
 	}
 	private addCentralDirectoryFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean, crc32: number, compressed: number, uncompressed: number, localHeader: number): void {
@@ -115,7 +106,7 @@ class Zipper {
 		/* signature (central directory file header), system version, and the common file-entry data, which are shared with the local file header */
 		offset = out.writeUInt32LE(0x02014b50, offset);
 		offset = out.writeUInt16LE(Zipper.SystemVersion, offset);
-		offset = this.addCommonFileData(out, offset, modified, deflate, directory);
+		offset = this.addCommonFileData(out, offset, modified, deflate, !directory);
 
 		/* checksum, compressed-size, uncompressed-size */
 		offset = out.writeUInt32LE(crc32, offset);
@@ -299,7 +290,7 @@ class Zipper {
 
 			/* record: signature, sizeof (header - initial fields), system version, zip version */
 			offset = buffer.writeUInt32LE(0x06064b50, offset);
-			offset = buffer.writeBigUInt64LE(BigInt(buffer.length - 12), offset);
+			offset = buffer.writeBigUInt64LE(BigInt(56 - 12), offset);
 			offset = buffer.writeUInt16LE(Zipper.SystemVersion, offset);
 			offset = buffer.writeUInt16LE(Zipper.ZipVersion, offset);
 
@@ -524,8 +515,9 @@ export class FileShare extends mws.ModuleHandler {
 				if (entry.kind == 'file') {
 					const stream = this.cache.stream(absolutePath, { checkFreshness: true });
 					if (stream != null) {
-						client.trace(`Adding [${absolutePath}] to zip at [${relativePath}]`);
-						await zipper.file(relativePath, entry.modified, stream, mws.lookupMediaTypeFromFile(name)?.compressible ?? false);
+						const compressed = ((mws.lookupMediaTypeFromFile(name)?.compressible ?? false) && entry.size >= mws.MIN_ENCODING_SIZE);
+						client.trace(`Adding [${absolutePath}] of size ${entry.size} to zip at [${relativePath}]${compressed ? ' (deflated)' : ''}`);
+						await zipper.file(relativePath, entry.modified, stream, compressed);
 					}
 				}
 
