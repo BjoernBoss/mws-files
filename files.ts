@@ -340,10 +340,10 @@ export const Endpoints = {
 	/** directory containting static assets (sparsely used) */
 	static: '/static',
 
-	/** directory for raw files and directory listings and views (GET, DELETE, POST; fully owned, auto-responds with 404) */
+	/** directory for raw files and directory listings and views (GET, DELETE, POST) */
 	files: '/files',
 
-	/** directory for web-sockets for change listener (fully owned, auto-responds with 404) */
+	/** directory for web-sockets for change listener */
 	sockets: '/ws'
 }
 
@@ -498,8 +498,8 @@ export class FileShare extends mws.ModuleHandler {
 			client.respondInternalError(`Failed to remove file [${filePath}]: ${err.message}`);
 		}
 	}
-	private async handleDownload(client: mws.ClientRequest, name: string, basePath: string, list: Record<string, DirEntry>): Promise<void> {
-		client.trace(`Zipping directory [${this.fileStorage(basePath)}]`);
+	private async handleDownload(client: mws.ClientRequest, name: string, filePath: string, list: Record<string, DirEntry>): Promise<void> {
+		client.log(`Zipping directory [${filePath}]`);
 
 		/* prepare writing the directory content to a zip file and create the zipper (automatically handles errors and closes connection) */
 		const writer = client.respondData({ media: mws.Media.Zip, headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
@@ -509,7 +509,7 @@ export class FileShare extends mws.ModuleHandler {
 		const process = async (path: string, entries: Record<string, DirEntry>): Promise<void> => {
 			for (const name in entries) {
 				const entry = entries[name], relativePath = `${path}/${name}`;
-				const absolutePath = this.fileStorage(`${basePath}${relativePath}`);
+				const absolutePath = `${filePath}${relativePath}`;
 
 				/* check if a file is to be added (skip removed files) */
 				if (entry.kind == 'file') {
@@ -537,7 +537,7 @@ export class FileShare extends mws.ModuleHandler {
 			await zipper.close();
 		}
 		catch (err: any) {
-			this.error(`Failed to zip directory [${this.fileStorage(basePath)}]: ${err.message}`);
+			this.error(`Failed to zip directory [${filePath}]: ${err.message}`);
 		}
 	}
 	private async handleFiles(client: mws.ClientRequest): Promise<void> {
@@ -611,7 +611,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if the directory is to be downloaded */
 		if (client.url.searchParams.get('download') == 'true') {
 			const [_, name, ext] = mws.splitFilePath(relativePath);
-			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), relativePath, list);
+			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), filePath, list);
 		}
 
 		/* build the view for the directory */

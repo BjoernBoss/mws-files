@@ -10,7 +10,7 @@ const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null } };
+const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null }, busy: 0 };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -1009,6 +1009,9 @@ _state.uploadContent = async (list, what) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
 
+	/* mark the state as busy */
+	++_state.busy;
+
 	/* check if its a complex list (larger than batch-size or directories need to be created), in which case they have to be fetched first */
 	let totalUpdate = null, totalList = [];
 	if (list.length > FILE_OPERATION_BATCH_SIZE || list.findIndex((e) => e.kind == 'directory' || e.path.lastIndexOf('/') > 0) >= 0) {
@@ -1158,6 +1161,9 @@ _state.uploadContent = async (list, what) => {
 	}
 	await Promise.all(promises);
 
+	/* clear the busy state */
+	--_state.busy;
+
 	/* log the final status message */
 	if (totalUpdate == null)
 		return;
@@ -1172,6 +1178,9 @@ _state.removeContent = async (name, directory) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
 	console.log(`Removing [${_state.makePath(false, true, name)}]...`);
+
+	/* mark the state as busy */
+	++_state.busy;
 
 	/* setup the notification */
 	const totalUpdate = _state.pushTaskStatus(`Remove: [${name}]`);
@@ -1263,6 +1272,9 @@ _state.removeContent = async (name, directory) => {
 	}
 	await Promise.all(promises);
 
+	/* clear the busy state */
+	--_state.busy;
+
 	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created; skipped can only be > 0, if failed is > 0) */
 	if (totalFailed > FILE_MAX_FAILURES)
 		totalUpdate(`Aborted due to too many failed deletions (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
@@ -1284,6 +1296,14 @@ window.onload = () => {
 	_state.config.basePath = (__LOAD_PARAMS__?.basePath ?? '/bad_path');
 	_state.config.rootPath = (__LOAD_PARAMS__?.rootPath ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
+
+	/* register the busy alert */
+	window.onbeforeunload = function (e) {
+		if (_state.busy == 0)
+			return null;
+		e.preventDefault();
+		return "keep";
+	};
 
 	/* setup the initial icons to be loaded */
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
