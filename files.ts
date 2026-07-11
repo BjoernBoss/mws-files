@@ -10,6 +10,7 @@ import * as libZlib from "zlib";
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
+const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
 interface DirEntry {
 	kind: 'file' | 'directory';
@@ -335,6 +336,9 @@ class Zipper {
 /**
  *	Endpoints used by the module.
  *	This mapping can be used to translate components of the module to different paths in the URL space.
+ *
+ *	All paths in the url use URI encoding for the components, while preserving '/'.
+ *	All paths in json format are not encoded.
  */
 export const Endpoints = {
 	/** directory containting static assets (sparsely used) */
@@ -383,6 +387,34 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if another cleanup needs to be scheduled */
 		if (remaining)
 			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+	}
+	private decodePath(client: mws.ClientRequest, path: string): string | null {
+		if (path == '/')
+			return path;
+		let out = '';
+
+		/* iterate over the path components (path can already only contain '/'; and URI-decode them) */
+		for (let i = 1; i < path.length;) {
+			let end = path.indexOf('/', i);
+			if (end == -1)
+				end = path.length;
+
+			/* uri decode the component and add it to the built path */
+			try {
+				const next = decodeURIComponent(path.substring(i, end));
+				if (next.match(VALID_NAME_REGEX)) {
+					out += `/${next}`, i = end + 1;
+					continue;
+				}
+
+				client.respondBadRequest({ message: `Invalid path component [${next}]` });
+			} catch (err: any) {
+				client.respondBadRequest({ message: `Invalid path encoding` });
+			}
+			return null;
+		}
+
+		return out;
 	}
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
 		const out: Record<string, DirEntry> = {};
@@ -509,7 +541,7 @@ export class FileShare extends mws.ModuleHandler {
 		const process = async (path: string, entries: Record<string, DirEntry>): Promise<void> => {
 			for (const name in entries) {
 				const entry = entries[name], relativePath = `${path}/${name}`;
-				const absolutePath = `${filePath}${relativePath}`;
+				const absolutePath = mws.joinNative(filePath, relativePath);
 
 				/* check if a file is to be added (skip removed files) */
 				if (entry.kind == 'file') {
@@ -540,9 +572,8 @@ export class FileShare extends mws.ModuleHandler {
 			this.error(`Failed to zip directory [${filePath}]: ${err.message}`);
 		}
 	}
-	private async handleFiles(client: mws.ClientRequest): Promise<void> {
-		const relativePath = client.getChildPath(Endpoints.files);
-		const filePath = this.fileStorage(relativePath);
+	private async handleFiles(client: mws.ClientRequest, path: string): Promise<void> {
+		const filePath = this.fileStorage(path);
 
 		/* ensure the request is using a supported method */
 		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
@@ -550,7 +581,7 @@ export class FileShare extends mws.ModuleHandler {
 			return;
 
 		/* check if the method is allowed for the given endpoint */
-		if (relativePath == '/' && method != 'GET')
+		if (path == '/' && method != 'GET')
 			return client.respondForbidden({ message: 'Root cannot be modified' });
 
 		/* validate the request kind */
@@ -560,20 +591,18 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if the entry is to be deleted or uploaded */
 		if (method == 'POST')
-			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFilePath(relativePath)[0]);
+			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFileName(path)[0]);
 		if (method == 'DELETE')
 			return this.handleDelete(client, filePath, (kind ?? 'file'));
 
 		/* try to serve it as a file (root cannot be served as a file) */
 		if (kind == null || kind == 'file') {
-			if (relativePath != '/') {
+			if (path != '/') {
 				const headers: Record<string, string> = { 'Kind': 'file' };
 
 				/* check if its supposed to be a download */
-				if (client.url.searchParams.get('download') == 'true') {
-					const [_, name, ext] = mws.splitFilePath(relativePath);
-					headers['Content-Disposition'] = `attachment; filename="${name}${ext}"`;
-				}
+				if (client.url.searchParams.get('download') == 'true')
+					headers['Content-Disposition'] = `attachment; filename="${mws.splitFileName(path)[1]}"`;
 
 				/* try to perform the actual serving (check freshness at all times, as the file might be changed) */
 				if (await client.tryRespondFile(filePath, { checkFreshness: true, headers }))
@@ -610,38 +639,29 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if the directory is to be downloaded */
 		if (client.url.searchParams.get('download') == 'true') {
-			const [_, name, ext] = mws.splitFilePath(relativePath);
-			return this.handleDownload(client, (name == '' && ext == '' ? 'directory' : `${name}${ext}`), filePath, list);
+			const [_, name] = mws.splitFileName(path);
+			return this.handleDownload(client, (name == '' ? 'directory' : name), filePath, list);
 		}
 
 		/* build the view for the directory */
-		return this.buildView(client, relativePath, list);
-	}
-	private async fetchBody(client: mws.ClientRequest, path: string): Promise<string | null> {
-		const fullPath = this.fileAssets(path);
-
-		/* look for the file */
-		try {
-			const data: Buffer | null = await this.cache.read(fullPath);
-			if (data == null) {
-				client.respondInternalError(`Failed to find content [${fullPath}]`);
-				return null;
-			}
-			return data.toString('utf-8');
-		}
-		catch (err: any) {
-			client.respondInternalError(`Failed to read content [${fullPath}]: ${err.message}`);
-			return null;
-		}
+		return this.buildView(client, path, list);
 	}
 	private staticPath(client: mws.ClientRequest, path: string): string {
 		return client.makePath(this.cache.immutable(this.name, mws.joinSanitized(Endpoints.static, path)));
 	}
 	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>): Promise<void> {
-		/* read the body */
-		const body: string | null = await this.fetchBody(client, '/page.html');
-		if (body == null)
-			return;
+		/* fetch the content of the main view */
+		const fullPath = this.fileAssets('/page.html');
+		let body: string | null = null;
+		try {
+			const data: Buffer | null = await this.cache.read(fullPath);
+			if (data == null)
+				return client.respondInternalError(`Failed to find content [${fullPath}]`);
+			body = data.toString('utf-8');
+		}
+		catch (err: any) {
+			return client.respondInternalError(`Failed to read content [${fullPath}]: ${err.message}`);
+		}
 
 		const loadParams: string = JSON.stringify({
 			delete: true,
@@ -668,7 +688,7 @@ export class FileShare extends mws.ModuleHandler {
 			},
 			content: list
 		});
-		const title = mws.splitFilePath(path).slice(1).join('');
+		const title = mws.splitFileName(path)[1];
 
 		/* add the required page headers and load the content from cache (prevent
 		*	user-zooming as this breaks viewport handling for keyboard-detection) */
@@ -685,7 +705,7 @@ export class FileShare extends mws.ModuleHandler {
 			],
 			body: b.Embed(body, true)
 		});
-		await client.respondHtml(page, { status: mws.Status.Ok });
+		client.respondHtml(page, { status: mws.Status.Ok });
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
 		/* check if the listener needs to be created */
@@ -770,28 +790,31 @@ export class FileShare extends mws.ModuleHandler {
 	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
 		client.trace(`Files handler for [${client.path}]`);
 
-		/* check if its just static content to be served */
-		if (client.isInsideOf(Endpoints.static)) {
-			if (client.requireMethod('GET') != null)
-				await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
-			return;
-		}
-
 		/* check if its one of the listener (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.sockets)) {
-			const relativePath = client.getChildPath(Endpoints.sockets);
+			const path = this.decodePath(client, client.getChildPath(Endpoints.sockets));
+			if (path == null)
+				return;
 
 			/* try to accept the web socket and handle it (await acceptance to ensure the
 			*	stop method is not entered before the full accept has been performed) */
 			const ws = await client.acceptWebSocket();
 			if (ws != null)
-				this.acceptWebSocket(ws, relativePath);
+				this.acceptWebSocket(ws, path);
 			return;
 		}
 
 		/* check if its a request for the files API (allow root itself for reading it) */
-		if (client.isSubPathOf(Endpoints.files))
-			return this.handleFiles(client);
+		if (client.isSubPathOf(Endpoints.files)) {
+			const path = this.decodePath(client, client.getChildPath(Endpoints.files));
+			if (path == null)
+				return;
+			return this.handleFiles(client, path);
+		}
+
+		/* check if its just static content to be served */
+		if (client.isInsideOf(Endpoints.static) && client.requireMethod('GET') != null)
+			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
 	}
 	protected override async handleStop(): Promise<void> {
 		/* close all sockets (no new sockets can arrive anymore once the stop-handler has started) */

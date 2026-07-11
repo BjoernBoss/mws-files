@@ -1037,7 +1037,7 @@ _state.uploadContent = async (list, what) => {
 				if (index >= 0) {
 					if (_state.list[index].kind == 'directory')
 						return (directories[path] = null);
-					totalUpdate(`Path [${path}] is not a directory`, false);
+					totalUpdate(`Path [${path.substring(1)}] is not a directory`, false);
 					initFailed = true;
 					return null;
 				}
@@ -1076,7 +1076,7 @@ _state.uploadContent = async (list, what) => {
 
 	/* helper functions to perform uploads */
 	const uploadFile = async (file) => {
-		const update = _state.pushTaskStatus(`Upload: [${file.path}]`);
+		const update = _state.pushTaskStatus(`Upload: [${file.path.substring(1)}]`);
 
 		/* check if the file is too large (does not contribute to the total-failed counter) */
 		if (_state.config.maxUploadSize != null && file.size > _state.config.maxUploadSize) {
@@ -1115,7 +1115,7 @@ _state.uploadContent = async (list, what) => {
 				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: 0 }]));
 		}
 		catch (e) {
-			_state.pushTaskStatic(`Create: [${path}]`, e, false);
+			_state.pushTaskStatic(`Create: [${path.substring(1)}]`, e, false);
 		}
 		return success;
 	};
