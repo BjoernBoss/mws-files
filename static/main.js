@@ -542,12 +542,14 @@ _state.showEntryMenu = (entry) => {
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
 				if (path != _state.config.path)
-					return _state.copyContent(entry.name, (entry.kind == 'directory'), path, null);
+					return _state.copyContent(entry.name, (entry.kind == 'directory'), buildPath(path, entry.name), path);
 
 				/* find the temporary name to be used */
+				const dot = entry.name.lastIndexOf('.');
+				const baseName = (entry.name.substring(0, dot < 0 ? entry.name.length : dot)), extName = (dot < 0 ? '' : entry.name.substring(dot));
 				let tempName = '';
 				for (let i = 1; ; ++i) {
-					tempName = `${entry.name} (${i})`;
+					tempName = `${baseName} - Copy${i > 1 ? ` (${i})` : ''}${extName}`;
 					if (_state.list.findIndex((v) => v.name == tempName) < 0)
 						break;
 				}
@@ -1321,7 +1323,7 @@ _state.removeContent = async (name, directory) => {
 		totalUpdate('Successfully removed!', true);
 	}
 }
-_state.copyContent = async (name, directory, target, newName) => {
+_state.copyContent = async (name, directory, target, printTarget) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
 	console.log(`Copying [${_state.fullPath(name)}] to [${target}]...`);
@@ -1330,25 +1332,25 @@ _state.copyContent = async (name, directory, target, newName) => {
 	++_state.busy;
 
 	/* setup the notification */
-	const totalUpdate = _state.pushTaskStatus(`Copy: [${name}] to [${newName != null ? newName : target}]`);
+	const totalUpdate = _state.pushTaskStatus(`Copy: [${name}] to [${printTarget}]`);
 	totalUpdate('Calculating...', null);
 
 	/* recursively collect the list of all files and directories to be copied */
 	const totalList = [];
 	if (directory) {
 		let initFailed = false;
-		const fetchAndUpdate = async (path, parent) => {
+		const fetchAndUpdate = async (src, dst, parent) => {
 			if (initFailed) return;
 
 			/* write the directory to the list */
-			totalList.push({ path, kind: 'directory', parent });
+			totalList.push({ src, dst, kind: 'directory', parent });
 
 			/* fetch the content list */
 			let content = null;
-			try { content = await _state.batch(() => _state.fs.fetchDirectory(path)); }
+			try { content = await _state.batch(() => _state.fs.fetchDirectory(src)); }
 			catch (e) {
 				if (!initFailed)
-					totalUpdate(`Reading [${path}]: ${e}`, false);
+					totalUpdate(`Reading [${src}]: ${e}`, false);
 				initFailed = true;
 				return;
 			}
@@ -1359,22 +1361,23 @@ _state.copyContent = async (name, directory, target, newName) => {
 			for (const name in content) {
 				if (initFailed) return;
 
-				const childPath = buildPath(path, name);
+				const childSrc = buildPath(src, name);
+				const childDst = buildPath(dst, name);
 				if (content[name].kind == 'file')
-					totalList.push({ path: childPath, kind: 'file', parent: path });
+					totalList.push({ src: childSrc, dst: childDst, kind: 'file', parent: src });
 				else
-					promises.push(fetchAndUpdate(childPath, path));
+					promises.push(fetchAndUpdate(childSrc, childDst, src));
 			}
 			await Promise.all(promises);
 		};
-		await fetchAndUpdate(_state.fullPath(name));
+		await fetchAndUpdate(_state.fullPath(name), target, null);
 		if (initFailed) {
 			--_state.busy;
 			return;
 		}
 	}
 	else
-		totalList.push({ path: _state.fullPath(name), kind: 'file' });
+		totalList.push({ src: _state.fullPath(name), dst: target, kind: 'file', parent: null });
 	totalUpdate(0, null, totalList.length);
 
 	totalUpdate('Not yet implemented', false);
