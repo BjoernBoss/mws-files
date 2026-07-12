@@ -542,7 +542,7 @@ _state.showEntryMenu = (entry) => {
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
 				if (path != _state.config.path)
-					return console.log(`Copy [${_state.fullPath(entry.name)}] to: ${path}`);
+					return _state.copyContent(entry.name, (entry.kind == 'directory'), path, null);
 
 				/* find the temporary name to be used */
 				let tempName = '';
@@ -567,7 +567,7 @@ _state.showEntryMenu = (entry) => {
 					_state.updateList(null);
 
 					if (fileName != null && validateEntry(false))
-						return console.log(`Copy [${_state.fullPath(entry.name)}] to: ${_state.fullPath(fileName)}`);
+						_state.copyContent(entry.name, (entry.kind == 'directory'), _state.fullPath(fileName), fileName);
 				});
 			});
 		};
@@ -1018,8 +1018,13 @@ _state.updateList = (content) => {
 }
 
 _state.createDirectory = (element, path, callback) => {
-	element.innerText = 'New Directory';
+	if (!_state.config.upload) {
+		_state.pushStaticText('Not allowed to upload content', false);
+		callback(null);
+		return () => { };
+	}
 
+	element.innerText = 'New Directory';
 	return _state.renameAnyEntry(element, () => true, (fileName) => {
 		if (fileName == null)
 			return callback(null);
@@ -1056,10 +1061,8 @@ _state.uploadContent = async (list, what) => {
 		totalUpdate('Calculating...', null);
 
 		/* helper to ensure all directories are created */
-		let directories = {}, initFailed = false;
+		let directories = {};
 		const fetchDirectory = (path) => {
-			if (initFailed) return null;
-
 			/* the root is always considered valid */
 			if (path.length <= 1)
 				return null;
@@ -1067,17 +1070,12 @@ _state.uploadContent = async (list, what) => {
 				return directories[path];
 			const parent = path.substring(0, path.lastIndexOf('/'));
 
-			/* check if its an entry in the current list, which is implicitly considered to exist */
+			/* check if its an entry in the current list, which is implicitly considered to exist (silently ignore errors) */
 			if (parent == '') {
 				const next = path.substring(1);
 				const index = _state.list.findIndex((e) => e.name == next);
-				if (index >= 0) {
-					if (_state.list[index].kind == 'directory')
-						return (directories[path] = null);
-					totalUpdate(`Path [${path.substring(1)}] is not a directory`, false);
-					initFailed = true;
-					return null;
-				}
+				if (index >= 0 && _state.list[index].kind == 'directory')
+					return (directories[path] = null);
 			}
 
 			/* ensure that the parent exists (before writing self to the list) and then create the new entry */
@@ -1094,18 +1092,17 @@ _state.uploadContent = async (list, what) => {
 
 			/* add the directory and process all children */
 			fetchDirectory(entry.path);
-			for (const child of await entry.children()) {
-				if (initFailed) return;
-				await unpackEntry(child);
-			}
+			const promises = [];
+			for (const child of await entry.children())
+				promises.push(unpackEntry(child));
+			await Promise.all(promises);
 		};
 
 		/* collect all of the list entries */
-		for (const entry of list) {
-			await unpackEntry(entry);
-			if (initFailed)
-				return;
-		}
+		const promises = [];
+		for (const entry of list)
+			promises.push(unpackEntry(entry));
+		await Promise.all(promises);
 		totalUpdate(0, null, totalList.length);
 	}
 	else
@@ -1260,8 +1257,10 @@ _state.removeContent = async (name, directory) => {
 			return totalList.length - 1;
 		};
 		await fetchAndUpdate(_state.fullPath(name));
-		if (initFailed)
+		if (initFailed) {
+			--_state.busy;
 			return;
+		}
 	}
 	else
 		totalList.push({ path: _state.fullPath(name), kind: 'file' });
@@ -1321,6 +1320,67 @@ _state.removeContent = async (name, directory) => {
 		_state.updateList(_state.list.filter((entry) => entry.name != name));
 		totalUpdate('Successfully removed!', true);
 	}
+}
+_state.copyContent = async (name, directory, target, newName) => {
+	if (!_state.config.upload)
+		return _state.pushStaticText('Not allowed to upload content', false);
+	console.log(`Copying [${_state.fullPath(name)}] to [${target}]...`);
+
+	/* mark the state as busy */
+	++_state.busy;
+
+	/* setup the notification */
+	const totalUpdate = _state.pushTaskStatus(`Copy: [${name}] to [${newName != null ? newName : target}]`);
+	totalUpdate('Calculating...', null);
+
+	/* recursively collect the list of all files and directories to be copied */
+	const totalList = [];
+	if (directory) {
+		let initFailed = false;
+		const fetchAndUpdate = async (path, parent) => {
+			if (initFailed) return;
+
+			/* write the directory to the list */
+			totalList.push({ path, kind: 'directory', parent });
+
+			/* fetch the content list */
+			let content = null;
+			try { content = await _state.batch(() => _state.fs.fetchDirectory(path)); }
+			catch (e) {
+				if (!initFailed)
+					totalUpdate(`Reading [${path}]: ${e}`, false);
+				initFailed = true;
+				return;
+			}
+			if (initFailed) return;
+
+			/* recursively visit all children and process them (after the parent to ensure it is already in the list) */
+			const promises = [];
+			for (const name in content) {
+				if (initFailed) return;
+
+				const childPath = buildPath(path, name);
+				if (content[name].kind == 'file')
+					totalList.push({ path: childPath, kind: 'file', parent: path });
+				else
+					promises.push(fetchAndUpdate(childPath, path));
+			}
+			await Promise.all(promises);
+		};
+		await fetchAndUpdate(_state.fullPath(name));
+		if (initFailed) {
+			--_state.busy;
+			return;
+		}
+	}
+	else
+		totalList.push({ path: _state.fullPath(name), kind: 'file' });
+	totalUpdate(0, null, totalList.length);
+
+	totalUpdate('Not yet implemented', false);
+	--_state.busy;
+	return;
+
 }
 
 window.onload = () => {

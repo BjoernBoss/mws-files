@@ -192,6 +192,7 @@
 	border-radius: 3px;
 	user-select: none;
 	min-width: 1.6em;
+	min-height: 1.6em;
 	display: flex;
 	color: #00000060;
 
