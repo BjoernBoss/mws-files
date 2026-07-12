@@ -396,7 +396,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* iterate over the path components (path can already only contain '/'; and URI-decode them) */
 		for (let i = 1; i < path.length;) {
 			let end = path.indexOf('/', i);
-			if (end == -1)
+			if (end < 0)
 				end = path.length;
 
 			/* uri decode the component and add it to the built path */
@@ -667,8 +667,8 @@ export class FileShare extends mws.ModuleHandler {
 			delete: true,
 			upload: true,
 			maxUploadSize: MAX_UPLOAD_SIZE,
-			basePath: path,
-			rootPath: client.makePath(Endpoints.files),
+			path,
+			root: client.makePath(Endpoints.files),
 			icons: {
 				back: this.staticPath(client, '/back-icon.svg'),
 				close: this.staticPath(client, '/close-icon.svg'),

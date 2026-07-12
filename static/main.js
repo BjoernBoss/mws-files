@@ -48,7 +48,7 @@ _state.fs = {
 		let response = null;
 
 		/* fetch the response from the server */
-		try { response = await fetch(`${_state.makePath(true, false, path)}?raw=true&kind=directory`); }
+		try { response = await fetch(`${_state.encodePath(path)}?raw=true&kind=directory`); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -73,7 +73,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to create the new directory */
-		try { response = await fetch(`${_state.makePath(true, false, path)}?kind=directory&silence=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
+		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silence=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -88,7 +88,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to remove the object */
-		try { response = await fetch(`${_state.makePath(true, false, path)}?kind=${kind}`, { method: 'DELETE' }); }
+		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}`, { method: 'DELETE' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -100,7 +100,7 @@ _state.fs = {
 			throw await _state.fs.handleFetchResponse(response);
 	},
 	upload: (path, progress, file) => new Promise(async (resolve, reject) => {
-		const baseUrl = `${_state.makePath(true, false, path)}?kind=file`;
+		const baseUrl = `${_state.encodePath(path)}?kind=file`;
 
 		/* try to reserve the given path (to test if its valid/available, before writing data to it) */
 		let response = null, settled = false;
@@ -167,9 +167,21 @@ _state.batch = async (task) => {
 		throw e;
 	}
 }
-_state.makePath = (root, base, ...paths) => {
-	const p0 = (root ? _state.config.rootPath : '/'), p1 = (base ? _state.config.basePath : '/');
-	return buildPath(p0, p1, ...paths);
+_state.fullPath = (...paths) => {
+	return buildPath(_state.config.path, ...paths);
+}
+_state.encodePath = (path) => {
+	let out = _state.config.root;
+
+	for (let i = (path.startsWith('/') ? 1 : 0); i < path.length;) {
+		let end = path.indexOf('/', i);
+		if (end < 0)
+			end = path.length;
+
+		out = buildPath(out, encodeURIComponent(path.substring(i, end)));
+		i = end + 1;
+	}
+	return out;
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {
@@ -224,7 +236,7 @@ _state.loadIcon = (placeholder, name) => {
 	/* mark the element to be interested in the icon and setup the initial placeholder */
 	if (!entry.resolved)
 		entry.queue.push(element);
-	element.innerHTML = placeholder;
+	element.innerText = placeholder;
 	return element;
 }
 _state.pushNotification = (body) => {
@@ -330,7 +342,7 @@ _state.makeLocation = (path, cb) => {
 
 	/* update the logic for home */
 	if (cb == null)
-		home.href = _state.makePath(true, false);
+		home.href = _state.encodePath('/');
 	else if (path == '/')
 		home.classList.add('disabled');
 	else
@@ -347,7 +359,7 @@ _state.makeLocation = (path, cb) => {
 
 		/* wire up the button logic */
 		if (cb == null)
-			entry.href = _state.makePath(true, false, path.substring(0, end));
+			entry.href = _state.encodePath(path.substring(0, end));
 		else if (end < path.length)
 			entry.onclick = () => cb(path.substring(0, end));
 		else
@@ -464,7 +476,7 @@ _state.showEntryMenu = (entry) => {
 	content.children[0].children[1].innerText = 'Open';
 	content.children[0].onclick = () => {
 		if (validateEntry(true))
-			document.location = _state.makePath(true, true, entry.name);
+			document.location = _state.encodePath(_state.fullPath(entry.name));
 	};
 	content.children[1].children[0].appendChild(_state.loadIcon('Download', 'download'));
 	content.children[1].children[1].innerText = 'Download';
@@ -474,7 +486,7 @@ _state.showEntryMenu = (entry) => {
 
 		/* request the actual download of the content */
 		const download = document.createElement('a');
-		download.href = `${_state.makePath(true, true, entry.name)}?kind=${entry.kind}&download=true`;
+		download.href = `${_state.encodePath(_state.fullPath(entry.name))}?kind=${entry.kind}&download=true`;
 		download.download = '';
 		download.click();
 	};
@@ -486,7 +498,7 @@ _state.showEntryMenu = (entry) => {
 		content.children[entryIndex++].onclick = () => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			navigator.clipboard.writeText(new URL(_state.makePath(true, true, entry.name), document.location).href)
+			navigator.clipboard.writeText(new URL(_state.encodePath(_state.fullPath(entry.name)), document.location).href)
 				.then(() => _state.pushStaticText('Copied to Clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
 		};
@@ -504,7 +516,7 @@ _state.showEntryMenu = (entry) => {
 			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), (fileName) => {
 				entry.html.name.innerText = entry.name;
 				if (fileName != null && fileName != entry.name)
-					console.log(`Rename [${_state.makePath(false, true, entry.name)}] to [${fileName}]`);
+					console.log(`Rename [${_state.fullPath(entry.name)}] to [${fileName}]`);
 			});
 		};
 	}
@@ -516,8 +528,8 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
-				if (path != _state.config.basePath)
-					return console.log(`Copy [${_state.makePath(false, true, entry.name)}] to: ${path}`);
+				if (path != _state.config.path)
+					return console.log(`Copy [${_state.fullPath(entry.name)}] to: ${path}`);
 
 				/* find the temporary name to be used */
 				let tempName = '';
@@ -542,7 +554,7 @@ _state.showEntryMenu = (entry) => {
 					_state.updateList(null);
 
 					if (fileName != null && validateEntry(false))
-						return console.log(`Copy [${_state.makePath(false, true, entry.name)}] to: ${_state.makePath(false, true, fileName)}`);
+						return console.log(`Copy [${_state.fullPath(entry.name)}] to: ${_state.fullPath(fileName)}`);
 				});
 			});
 		};
@@ -555,7 +567,7 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(true, (path) => {
 				if (validateEntry(false))
-					console.log(`Move [${_state.makePath(false, true, entry.name)}] to: ${path}`);
+					console.log(`Move [${_state.fullPath(entry.name)}] to: ${path}`);
 			});
 		};
 	}
@@ -638,7 +650,7 @@ _state.showCreateMenu = () => {
 		_state.updateList(null);
 
 		/* start editing the new element */
-		_state.createDirectory(entry.html.name, _state.config.basePath, (promise) => {
+		_state.createDirectory(entry.html.name, _state.config.path, (promise) => {
 			entry.html.row.remove();
 			--_state.fakeEntries;
 			_state.updateList(null);
@@ -688,7 +700,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		if (temp.kind == 'directory')
 			baseList.push(temp.name);
 	}
-	const fetched = { [_state.config.basePath]: baseList.sort() };
+	const fetched = { [_state.config.path]: baseList.sort() };
 
 	/* setup helper functions for the dialog */
 	let settled = false, busyTimer = null, cancelTask = () => { };
@@ -738,7 +750,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		const directories = fetched[path];
 
 		/* update the confirmation button */
-		if (move && path == _state.config.basePath)
+		if (move && path == _state.config.path)
 			confirm.classList.add('disabled');
 		else
 			confirm.classList.remove('disabled');
@@ -798,7 +810,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 					updateView(path);
 
 					/* check if it should also be pushed to the root list (ensure that a new list is created) */
-					if (path == _state.config.basePath && _state.list.findIndex((v) => v.name == fileName) < 0)
+					if (path == _state.config.path && _state.list.findIndex((v) => v.name == fileName) < 0)
 						_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: 0 }]));
 				}).catch(() => {
 					if (settled) return;
@@ -809,7 +821,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	};
 
 	/* construct the initial list and show the actual menu */
-	updateView(_state.config.basePath);
+	updateView(_state.config.path);
 	_state.updateOverlay('pick-overlay', () => {
 		settled = true;
 		cancelTask();
@@ -817,7 +829,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	});
 }
 _state.showDeleteConfirm = (name, callback) => {
-	document.getElementById('remove-name').innerText = _state.makePath(false, true, name);
+	document.getElementById('remove-name').innerText = _state.fullPath(name);
 
 	let settled = false;
 	document.getElementById('remove-confirm').onclick = () => {
@@ -893,7 +905,7 @@ _state.createListEntry = (params, links) => {
 
 	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
 	if (links)
-		entry.href = _state.makePath(true, true, params.name);
+		entry.href = _state.encodePath(_state.fullPath(params.name));
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
 	if (params.kind == 'directory')
@@ -987,9 +999,9 @@ _state.createDirectory = (element, path, callback) => {
 		if (fileName == null)
 			return callback(null);
 
-		const fullPath = buildPath(path, encodeURIComponent(fileName));
+		const fullPath = buildPath(path, fileName);
 		callback(new Promise((resolve, reject) => {
-			const update = _state.pushTaskStatus(`Create: [${fullPath}]`);
+			const update = _state.pushTaskStatus(`Create: [${path == _state.config.path ? fileName : fullPath}]`);
 			update('Creating...', null);
 			_state.batch(() => _state.fs.makeDirectory(fullPath, false))
 				.then(() => {
@@ -1088,7 +1100,7 @@ _state.uploadContent = async (list, what) => {
 		/* try to perform the actual upload */
 		let success = false;
 		try {
-			await _state.fs.upload(_state.makePath(false, true, file.path), (p) => update(p, null), file.file);
+			await _state.fs.upload(_state.fullPath(file.path), (p) => update(p, null), file.file);
 			success = true;
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
@@ -1106,7 +1118,7 @@ _state.uploadContent = async (list, what) => {
 		/* try to create the new directory */
 		let success = false;
 		try {
-			await _state.fs.makeDirectory(_state.makePath(false, true, path), true);
+			await _state.fs.makeDirectory(_state.fullPath(path), true);
 			success = true;
 
 			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created)  */
@@ -1177,7 +1189,7 @@ _state.uploadContent = async (list, what) => {
 _state.removeContent = async (name, directory) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
-	console.log(`Removing [${_state.makePath(false, true, name)}]...`);
+	console.log(`Removing [${_state.fullPath(name)}]...`);
 
 	/* mark the state as busy */
 	++_state.busy;
@@ -1222,12 +1234,12 @@ _state.removeContent = async (name, directory) => {
 			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
 			return totalList.length - 1;
 		};
-		await fetchAndUpdate(_state.makePath(false, true, name));
+		await fetchAndUpdate(_state.fullPath(name));
 		if (initFailed)
 			return;
 	}
 	else
-		totalList.push({ path: _state.makePath(false, true, name), kind: 'file' });
+		totalList.push({ path: _state.fullPath(name), kind: 'file' });
 	totalUpdate(0, null, totalList.length);
 
 	/* iterate over the list and collect all of the corresponding delete-promises (they take care of batching themselves) */
@@ -1286,6 +1298,12 @@ _state.removeContent = async (name, directory) => {
 	}
 }
 
+window.onloadstart = () => {
+	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
+	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
+}
+
 window.onload = () => {
 	/* parse the initial configuration */
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
@@ -1293,8 +1311,8 @@ window.onload = () => {
 	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
 	if (_state.config.maxUploadSize != null && _state.config.maxUploadSize <= 0)
 		_state.config.upload = false;
-	_state.config.basePath = (__LOAD_PARAMS__?.basePath ?? '/bad_path');
-	_state.config.rootPath = (__LOAD_PARAMS__?.rootPath ?? '/bad_path');
+	_state.config.path = (__LOAD_PARAMS__?.path ?? '/bad_path');
+	_state.config.root = (__LOAD_PARAMS__?.root ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the busy alert */
@@ -1311,11 +1329,11 @@ window.onload = () => {
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
 
 	/* build the location and setup the references */
-	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.basePath, null));
-	if (_state.config.basePath == '/')
+	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.path, null));
+	if (_state.config.path == '/')
 		document.getElementById('button-parent').classList.add('disabled');
 	else
-		document.getElementById('button-parent').href = _state.makePath(true, false, _state.config.basePath.substring(0, _state.config.basePath.lastIndexOf('/')));
+		document.getElementById('button-parent').href = _state.encodePath(_state.config.path.substring(0, _state.config.path.lastIndexOf('/')));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
