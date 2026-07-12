@@ -408,7 +408,7 @@ export class FileShare extends mws.ModuleHandler {
 				}
 
 				client.respondBadRequest({ message: `Invalid path component [${next}]` });
-			} catch (err: any) {
+			} catch (_) {
 				client.respondBadRequest({ message: `Invalid path encoding` });
 			}
 			return null;
@@ -476,8 +476,7 @@ export class FileShare extends mws.ModuleHandler {
 
 				/* check if the parent directory exists */
 				let parentExists = false;
-				try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); }
-				catch (err: any) { }
+				try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); } catch (_) { }
 				if (!parentExists)
 					return client.respondNotFound();
 
@@ -496,11 +495,25 @@ export class FileShare extends mws.ModuleHandler {
 				try {
 					if ((await libFsPromises.stat(filePath)).isDirectory())
 						return client.respondOk({ message: `Already exists` });
-				}
-				catch (err: any) { }
+				} catch (_) { }
 			}
 			return client.respondConflict({ message: `Path already exists` });
 		}
+	}
+	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: string): Promise<void> {
+		const move = client.url.searchParams.get('move') ?? null;
+		if (move == null)
+			return client.respondBadRequest({ message: 'PUT requires operation target' });
+
+		/* decode the path */
+		let targetPath: string = '';
+		try {
+			targetPath = this.fileStorage(decodeURIComponent(move));
+		} catch (_) {
+			return client.respondBadRequest({ message: `Invalid path encoding` });
+		}
+
+		return client.respondBadRequest({ message: `Not yet implemented` });
 	}
 	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: string): Promise<void> {
 		/* try to remove the object */
@@ -576,7 +589,7 @@ export class FileShare extends mws.ModuleHandler {
 		const filePath = this.fileStorage(path);
 
 		/* ensure the request is using a supported method */
-		const method = client.requireMethod(['GET', 'POST', 'DELETE']);
+		const method = client.requireMethod(['GET', 'POST', 'PUT', 'DELETE']);
 		if (method == null)
 			return;
 
@@ -589,9 +602,11 @@ export class FileShare extends mws.ModuleHandler {
 		if (kind != null && kind != 'file' && kind != 'directory')
 			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
 
-		/* check if the entry is to be deleted or uploaded */
+		/* check if the entry is to be deleted or uploaded or moved */
 		if (method == 'POST')
 			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFileName(path)[0]);
+		if (method == 'PUT')
+			return this.handleCopyMove(client, filePath, (kind ?? 'file'));
 		if (method == 'DELETE')
 			return this.handleDelete(client, filePath, (kind ?? 'file'));
 

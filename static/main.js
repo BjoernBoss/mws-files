@@ -135,7 +135,22 @@ _state.fs = {
 			reject('Network error');
 		}
 		request.send(file);
-	})
+	}),
+	move: async (path, target, kind) => {
+		let response = null;
+
+		/* try to move the object */
+		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}&move=${encodeURIComponent(target)}`, { method: 'PUT' }); }
+		catch (_) {
+			throw 'Network error';
+		}
+
+		/* validate the response */
+		if (response.ok)
+			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] moved to [${target}]`);
+		else
+			throw await _state.fs.handleFetchResponse(response);
+	}
 }
 _state.batch = async (task) => {
 	const batch = _state.batchState;
@@ -499,10 +514,22 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 
 			/* start renaming the element */
-			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), (fileName) => {
+			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), async (fileName) => {
 				entry.html.name.innerText = entry.name;
-				if (fileName != null && fileName != entry.name)
-					console.log(`Rename [${_state.fullPath(entry.name)}] to [${fileName}]`);
+				if (fileName == null || fileName == entry.name)
+					return;
+				const update = _state.pushTaskStatus(`Rename: [${entry.name}] to [${fileName}]`);
+				update('Renaming...', null);
+
+				/* try to perform the actual move */
+				try {
+					await _state.fs.move(_state.fullPath(entry.name), _state.fullPath(fileName), entry.kind);
+					update('Successfully renamed!', true);
+
+					/* apply the update preemtively to the list (ensure that a new list is created) */
+					_state.updateList(_state.list.filter((e) => e != entry).concat([{ name: fileName, kind: entry.kind, size: entry.size, modified: entry.modified }]));
+				}
+				catch (e) { update(e, false); }
 			});
 		};
 	}
@@ -551,9 +578,21 @@ _state.showEntryMenu = (entry) => {
 		content.children[entryIndex++].onclick = () => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			_state.showMoveCopyPicker(true, (path) => {
-				if (validateEntry(false))
-					console.log(`Move [${_state.fullPath(entry.name)}] to: ${path}`);
+			_state.showMoveCopyPicker(true, async (path) => {
+				if (!validateEntry(false))
+					return;
+				const update = _state.pushTaskStatus(`Move: [${entry.name}] to [${path}]`);
+				update('Moving...', null);
+
+				/* try to perform the actual move */
+				try {
+					await _state.fs.move(_state.fullPath(entry.name), path, entry.kind);
+					update('Successfully moved!', true);
+
+					/* apply the update preemtively to the list (ensure that a new list is created) */
+					_state.updateList(_state.list.filter((e) => e != entry));
+				}
+				catch (e) { update(e, false); }
 			});
 		};
 	}
@@ -712,8 +751,8 @@ _state.showMoveCopyPicker = (move, callback) => {
 
 		/* fetch the directory state from the server */
 		_state.batch(() => {
-			if (!settled)
-				_state.fs.fetchDirectory(target);
+			if (settled) return Promise.resolve();
+			return _state.fs.fetchDirectory(target);
 		}).then((json) => {
 			if (settled) return;
 			clearBusy();
