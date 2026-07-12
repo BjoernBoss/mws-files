@@ -197,46 +197,32 @@ _state.formatSize = (size) => {
 	}
 }
 _state.loadIcon = (placeholder, name) => {
-	/* load the icons manually to ensure they are placed in-place and can be CSS modified */
+	/* check if this is the initial request and trigger the fetch (load the icons manually to ensure they are placed in-place
+	*	and can be CSS modified, and are only fetched once, as re-fetches would otehrwise trigger repeated failure logs) */
+	let promise = _state.loadedIcons[name] ?? null;
+	if (promise == null) {
+		promise = (_state.loadedIcons[name] = new Promise((resolve, reject) => {
+			fetch(_state.config.icons[name] ?? '/bad_path').then((resp) => {
+				if (!resp.ok)
+					throw 0;
+				return resp.text();
+			}).then((content) => {
+				try {
+					const parser = new DOMParser();
+					const icon = parser.parseFromString(content, 'image/svg+xml').documentElement;
+					resolve(icon);
+				}
+				catch (_) {
+					reject();
+				}
+			}).catch(() => reject());
+		}));
+	}
+
+	/* setup the new element and attach the final icon insertion (on errors, insert the placeholder) */
 	const element = buildElement({ class: 'load-icon' });
-
-	let entry = _state.loadedIcons[name] ?? null;
-
-	if (entry != null && entry.content != null) {
-		element.innerHTML = entry.content;
-		return element;
-	}
-
-	/* check if this is the initial request and trigger the fetch */
-	if (entry == null) {
-		entry = (_state.loadedIcons[name] = {
-			content: null,
-			resolved: false,
-			queue: []
-		});
-
-		/* cache the fetches to ensure that failure is logged only once, as every icon
-		*	usage (for example via 'src=...') would otherwise trigger the failure log */
-		fetch(_state.config.icons[name] ?? '/bad_path').then((resp) => {
-			if (!resp.ok)
-				throw 0;
-			return resp.text();
-		}).then((content) => {
-			entry.resolved = true;
-			entry.content = content;
-			for (const elem of entry.queue)
-				elem.innerHTML = entry.content;
-			entry.queue = [];
-		}).catch(() => {
-			entry.resolved = true;
-			entry.queue = [];
-		});
-	}
-
-	/* mark the element to be interested in the icon and setup the initial placeholder */
-	if (!entry.resolved)
-		entry.queue.push(element);
-	element.innerText = placeholder;
+	promise.then((icon) => { element.replaceChildren(icon.cloneNode(true)); })
+		.catch(() => { element.innerText = placeholder; });
 	return element;
 }
 _state.pushNotification = (body) => {
@@ -1296,12 +1282,6 @@ _state.removeContent = async (name, directory) => {
 		_state.updateList(_state.list.filter((entry) => entry.name != name));
 		totalUpdate('Successfully removed!', true);
 	}
-}
-
-window.onloadstart = () => {
-	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
-	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
-	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
 }
 
 window.onload = () => {
