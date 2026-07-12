@@ -73,7 +73,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to create the new directory */
-		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silence=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
+		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silent=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
 		catch (_) {
 			throw 'Network error';
 		}

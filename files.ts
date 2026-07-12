@@ -26,9 +26,9 @@ interface DirListener {
 }
 
 class Zipper {
-	/* system: custom/undefined; zip: 6.3 => 63 */
+	/* system: custom/undefined; zip: 4.5 => 45 (zip64 extensions are the highest required feature) */
 	private static SystemVersion: number = 96;
-	private static ZipVersion: number = 63;
+	private static ZipVersion: number = 45;
 	private static crc32Table: Uint32Array | null = null;
 	private static crc32InitTable(): void {
 		Zipper.crc32Table = new Uint32Array(256);
@@ -47,6 +47,7 @@ class Zipper {
 	}
 
 	private cleanup: (err: any) => void;
+	private failure: any;
 	private sink: libStream.Writable;
 	private fileOffset: number;
 	private entries: Buffer[];
@@ -54,8 +55,12 @@ class Zipper {
 
 	public constructor(sink: libStream.Writable) {
 		this.cleanup = () => { };
+		this.failure = null;
 		this.sink = sink;
-		this.sink.once('error', (err: any) => this.cleanup(err));
+		this.sink.once('error', (err: any) => {
+			this.failure = err;
+			this.cleanup(err);
+		});
 		this.fileOffset = 0;
 		this.entries = [];
 		this.closed = false;
@@ -71,15 +76,17 @@ class Zipper {
 		offset = buffer.writeUInt16LE((descriptor ? (0x01 << 3) : 0) | (0x01 << 11), offset);
 		offset = buffer.writeUInt16LE((deflate ? 0x08 : 0x00), offset);
 
-		/* last-modification time; last-modification date */
+		/* last-modification time; last-modification date (clamp the year to the representable range of [1980, 2107]) */
 		const date = new Date(modified);
+		const year = Math.min(Math.max(date.getFullYear(), 1980), 2107);
 		offset = buffer.writeUInt16LE((date.getSeconds() / 2) | (date.getMinutes() << 5) | (date.getHours() << 11), offset);
-		offset = buffer.writeUInt16LE(date.getDate() | ((date.getMonth() + 1) << 5) | ((date.getFullYear() - 1980) << 9), offset);
+		offset = buffer.writeUInt16LE(date.getDate() | ((date.getMonth() + 1) << 5) | ((year - 1980) << 9), offset);
 		return offset;
 	}
 	private localFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean): Buffer {
 		/* incase of it not being a directory, the size is not yet known, and must be assumed to surpass 32bits) */
-		const out = Buffer.alloc(30 + fileName.length);
+		const extSize = (directory ? 0 : 20);
+		const out = Buffer.alloc(30 + fileName.length + extSize);
 		let offset = 0;
 
 		/* signature (local file header) and the common file-entry data, which are shared with the central directory file header */
@@ -91,11 +98,20 @@ class Zipper {
 		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
 		offset = out.writeUInt32LE((directory ? 0x00 : 0xffffffff), offset);
 
-		/* write the file name length and extra field length out (no need for extra fields, as the data descriptor
-		*	will hold the actual large size; already encoded by it being 0xffffffff) and add the filename itself */
+		/* write the file name length and extra field length out and add the filename itself */
 		offset = out.writeUInt16LE(fileName.length, offset);
-		offset = out.writeUInt16LE(0, offset);
+		offset = out.writeUInt16LE(extSize, offset);
 		fileName.copy(out, offset);
+		offset += fileName.length;
+
+		/* add the zip64 extra field for files to announce the sizes in the data descriptor as being 8-byte values
+		*	(the sizes themselves are left as zero, as they are only known once the data descriptor is written) */
+		if (!directory) {
+			offset = out.writeUInt16LE(0x0001, offset);
+			offset = out.writeUInt16LE(16, offset);
+			offset = out.writeBigUInt64LE(BigInt(0), offset);
+			offset = out.writeBigUInt64LE(BigInt(0), offset);
+		}
 		return out;
 	}
 	private addCentralDirectoryFileHeader(modified: number, fileName: Buffer, deflate: boolean, directory: boolean, crc32: number, compressed: number, uncompressed: number, localHeader: number): void {
@@ -105,9 +121,10 @@ class Zipper {
 		const out = Buffer.alloc(46 + fileName.length + extSize);
 		let offset = 0;
 
-		/* signature (central directory file header), system version, and the common file-entry data, which are shared with the local file header */
+		/* signature (central directory file header), version made by (system in the upper byte, supported
+		*	zip version in the lower), and the common file-entry data, which are shared with the local file header */
 		offset = out.writeUInt32LE(0x02014b50, offset);
-		offset = out.writeUInt16LE(Zipper.SystemVersion, offset);
+		offset = out.writeUInt16LE((Zipper.SystemVersion << 8) | Zipper.ZipVersion, offset);
 		offset = this.addCommonFileData(out, offset, modified, deflate, !directory);
 
 		/* checksum, compressed-size, uncompressed-size */
@@ -155,7 +172,9 @@ class Zipper {
 
 	public file(path: string, modified: number, data: libStream.Readable, compress: boolean): Promise<void> {
 		if (this.closed)
-			throw new Error(`End of zip alreaedy reached`);
+			throw new Error(`End of zip already reached`);
+		if (this.failure != null || this.sink.destroyed)
+			throw (this.failure ?? new Error(`Zip sink has already been closed`));
 		return new Promise<void>(async (resolve, reject) => {
 			let settled = false;
 
@@ -194,10 +213,10 @@ class Zipper {
 					}
 				}));
 
-				/* check if the data should be piped through the compression */
+				/* check if the data should be piped through the compression (zip requires raw deflate without any zlib wrapper) */
 				if (compress) {
 					totalCompressed = 0;
-					const encoder = libZlib.createDeflate();
+					const encoder = libZlib.createDeflateRaw();
 					const compressed = new libStream.Transform({
 						transform: (chunk, _, cb) => {
 							totalCompressed += chunk.byteLength;
@@ -239,7 +258,9 @@ class Zipper {
 	}
 	public directory(path: string, modified: number): Promise<void> {
 		if (this.closed)
-			throw new Error(`End of zip alreaedy reached`);
+			throw new Error(`End of zip already reached`);
+		if (this.failure != null || this.sink.destroyed)
+			throw (this.failure ?? new Error(`Zip sink has already been closed`));
 		return new Promise<void>(async (resolve, reject) => {
 			let settled = false;
 
@@ -269,7 +290,9 @@ class Zipper {
 	}
 	public close(): Promise<void> {
 		if (this.closed)
-			throw new Error(`End of zip alreaedy reached`);
+			throw new Error(`End of zip already reached`);
+		if (this.failure != null || this.sink.destroyed)
+			throw (this.failure ?? new Error(`Zip sink has already been closed`));
 		this.closed = true;
 
 		return new Promise<void>(async (resolve, reject) => {
@@ -290,10 +313,10 @@ class Zipper {
 			const buffer = Buffer.alloc(56 + 20 + 22);
 			let offset = 0;
 
-			/* record: signature, sizeof (header - initial fields), system version, zip version */
+			/* record: signature, sizeof (header - initial fields), version made by, version needed to extract */
 			offset = buffer.writeUInt32LE(0x06064b50, offset);
 			offset = buffer.writeBigUInt64LE(BigInt(56 - 12), offset);
-			offset = buffer.writeUInt16LE(Zipper.SystemVersion, offset);
+			offset = buffer.writeUInt16LE((Zipper.SystemVersion << 8) | Zipper.ZipVersion, offset);
 			offset = buffer.writeUInt16LE(Zipper.ZipVersion, offset);
 
 			/* record: disk#, start disk#, entries on this disk, total entries */
@@ -444,14 +467,14 @@ export class FileShare extends mws.ModuleHandler {
 	private async checkPathKind(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<boolean> {
 		/* let errors propagate out */
 		const stats = await libFsPromises.stat(filePath);
-		if (!(kind == 'directory' ? stats.isDirectory() : stats.isFile())) {
-			client.respondConflict({ message: `Path is not a ${kind}` });
-			return false;
-		}
-
 		if (!stats.isFile() && !stats.isDirectory()) {
 			this.warning(`Unsupported file-system object encountered: ${filePath}`);
 			client.respondNotFound();
+			return false;
+		}
+
+		if (!(kind == 'directory' ? stats.isDirectory() : stats.isFile())) {
+			client.respondConflict({ message: `Path is not a ${kind}` });
 			return false;
 		}
 		return true;
@@ -552,21 +575,24 @@ export class FileShare extends mws.ModuleHandler {
 		if (move == null)
 			return client.respondBadRequest({ message: 'PUT requires operation target' });
 
-		/* decode the path */
-		let target: string = '', fileTarget: string = '';
-		try {
-			target = mws.sanitize(decodeURIComponent(move), false);
-			fileTarget = this.fileStorage(target);
-		} catch (_) {
-			return client.respondBadRequest({ message: `Invalid path encoding` });
+		/* validate the target path (query parameters are received decoded, hence only sanitize the path and validate its components) */
+		const target = mws.sanitize(move, false);
+		if (target == '/')
+			return client.respondBadRequest({ message: 'Root cannot be a move target' });
+		for (const name of target.substring(1).split('/')) {
+			if (!name.match(VALID_NAME_REGEX))
+				return client.respondBadRequest({ message: `Invalid path component [${name}]` });
 		}
+		const fileTarget = this.fileStorage(target);
 
 		/* validate the source kind */
 		try {
 			if (!await this.checkPathKind(client, filePath, kind))
 				return;
 		} catch (err: any) {
-			return client.respondInternalError(`Failed to copy/move [${filePath}]: ${err.message}`);
+			if (err.code == 'ENOENT')
+				return client.respondNotFound();
+			return client.respondInternalError(`Failed to move [${filePath}]: ${err.message}`);
 		}
 
 		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
@@ -575,16 +601,19 @@ export class FileShare extends mws.ModuleHandler {
 		if (id == null)
 			return;
 
-		/* perform the actual move (ignore any race conditions, if the path is modified up to the copy/move) and clear the reservation */
+		/* perform the actual move (ignore any race conditions, if the path is modified up to the move) and clear the reservation */
 		try {
 			await libFsPromises.rename(filePath, fileTarget);
 			client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
 		}
 		catch (err: any) {
-			client.respondInternalError(`Failed to copy/move [${filePath}]: ${err.message}`);
+			if (err.code == 'ENOENT')
+				client.respondNotFound();
+			else
+				client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
 		}
-		if (this.reservations.entries[filePath].id == id)
-			delete this.reservations.entries[filePath];
+		if (this.reservations.entries[fileTarget]?.id == id)
+			delete this.reservations.entries[fileTarget];
 	}
 	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
 		/* try to remove the object */
@@ -608,14 +637,19 @@ export class FileShare extends mws.ModuleHandler {
 				if (_err.code == 'ENOENT')
 					return client.respondNotFound();
 			}
-			client.respondInternalError(`Failed to remove file [${filePath}]: ${err.message}`);
+			client.respondInternalError(`Failed to remove ${kind} [${filePath}]: ${err.message}`);
 		}
 	}
 	private async handleDownload(client: mws.ClientRequest, name: string, filePath: string, list: Record<string, DirEntry>): Promise<void> {
 		client.log(`Zipping directory [${filePath}]`);
 
-		/* prepare writing the directory content to a zip file and create the zipper (automatically handles errors and closes connection) */
+		/* prepare writing the directory content to a zip file and create the zipper (automatically handles errors and
+		*	closes connection) or immediately respond, if its only a head request and no content needs to be produced */
 		const writer = client.respondData({ media: mws.Media.Zip, headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
+		if (client.isHead) {
+			writer.once('error', () => { });
+			return new Promise<void>((resolve) => writer.end(() => resolve()));
+		}
 		const zipper = new Zipper(writer);
 
 		/* helper to process directory (let errors propagate out) */
@@ -644,13 +678,15 @@ export class FileShare extends mws.ModuleHandler {
 			}
 		};
 
-		/* process the root directory and close the zipper */
+		/* process the root directory and close the zipper (ensure the response stream is
+		*	properly destroyed on errors, as the zip cannot be completed anymore) */
 		try {
 			await process('', list);
 			await zipper.close();
 		}
 		catch (err: any) {
 			this.error(`Failed to zip directory [${filePath}]: ${err.message}`);
+			writer.destroy(err);
 		}
 	}
 	private async handleFiles(client: mws.ClientRequest, path: string): Promise<void> {
