@@ -150,6 +150,23 @@ _state.fs = {
 			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] moved to [${target}]`);
 		else
 			throw await _state.fs.handleFetchResponse(response);
+	},
+	copy: async (path, target, progress) => {
+		let response = null;
+
+		throw 'Not yet implemented';
+
+		/* try to move the object */
+		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}&move=${encodeURIComponent(target)}`, { method: 'PUT' }); }
+		catch (_) {
+			throw 'Network error';
+		}
+
+		/* validate the response */
+		if (response.ok)
+			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] moved to [${target}]`);
+		else
+			throw await _state.fs.handleFetchResponse(response);
 	}
 }
 _state.batch = async (task) => {
@@ -542,7 +559,7 @@ _state.showEntryMenu = (entry) => {
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
 				if (path != _state.config.path)
-					return _state.copyContent(entry.name, (entry.kind == 'directory'), buildPath(path, entry.name), path);
+					return _state.copyContent(entry, buildPath(path, entry.name), path);
 
 				/* find the temporary name to be used */
 				const dot = entry.name.lastIndexOf('.');
@@ -569,7 +586,7 @@ _state.showEntryMenu = (entry) => {
 					_state.updateList(null);
 
 					if (fileName != null && validateEntry(false))
-						_state.copyContent(entry.name, (entry.kind == 'directory'), _state.fullPath(fileName), fileName);
+						_state.copyContent(entry, _state.fullPath(fileName), fileName);
 				});
 			});
 		};
@@ -611,7 +628,7 @@ _state.showEntryMenu = (entry) => {
 			/* ask the user if the deletion should actually be performed */
 			_state.showDeleteConfirm(entry.name, () => {
 				if (validateEntry(false))
-					_state.removeContent(entry.name, (entry.kind == 'directory'));
+					_state.removeContent(entry);
 			});
 		};
 	}
@@ -1145,7 +1162,7 @@ _state.uploadContent = async (list, what) => {
 			await _state.fs.makeDirectory(_state.fullPath(path), true);
 			success = true;
 
-			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created)  */
+			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
 			const name = path.substring(path.lastIndexOf('/') + 1);
 			if (path.length == name.length + 1)
 				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: 0 }]));
@@ -1210,21 +1227,21 @@ _state.uploadContent = async (list, what) => {
 	else
 		totalUpdate('Successfully uploaded!', true);
 }
-_state.removeContent = async (name, directory) => {
+_state.removeContent = async (entry) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
-	console.log(`Removing [${_state.fullPath(name)}]...`);
+	console.log(`Removing [${_state.fullPath(entry.name)}]...`);
 
 	/* mark the state as busy */
 	++_state.busy;
 
 	/* setup the notification */
-	const totalUpdate = _state.pushTaskStatus(`Remove: [${name}]`);
+	const totalUpdate = _state.pushTaskStatus(`Remove: [${entry.name}]`);
 	totalUpdate('Calculating...', null);
 
 	/* recursively collect the list of all files and directories to be removed */
 	const totalList = [];
-	if (directory) {
+	if (entry.kind == 'directory') {
 		let initFailed = false;
 		const fetchAndUpdate = async (path) => {
 			if (initFailed) return;
@@ -1258,14 +1275,14 @@ _state.removeContent = async (name, directory) => {
 			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
 			return totalList.length - 1;
 		};
-		await fetchAndUpdate(_state.fullPath(name));
+		await fetchAndUpdate(_state.fullPath(entry.name));
 		if (initFailed) {
 			--_state.busy;
 			return;
 		}
 	}
 	else
-		totalList.push({ path: _state.fullPath(name), kind: 'file' });
+		totalList.push({ path: _state.fullPath(entry.name), kind: 'file' });
 	totalUpdate(0, null, totalList.length);
 
 	/* iterate over the list and collect all of the corresponding delete-promises (they take care of batching themselves) */
@@ -1319,31 +1336,32 @@ _state.removeContent = async (name, directory) => {
 	else if (totalFailed > 0)
 		totalUpdate(`Failed to delete ${totalFailed} out of ${totalList.length} (Skipped: ${totalSkipped})`, false);
 	else {
-		_state.updateList(_state.list.filter((entry) => entry.name != name));
+		_state.updateList(_state.list.filter((value) => value.name != entry.name));
 		totalUpdate('Successfully removed!', true);
 	}
 }
-_state.copyContent = async (name, directory, target, printTarget) => {
+_state.copyContent = async (entry, target, printTarget) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
-	console.log(`Copying [${_state.fullPath(name)}] to [${target}]...`);
+	console.log(`Copying [${_state.fullPath(entry.name)}] to [${target}]...`);
 
 	/* mark the state as busy */
 	++_state.busy;
 
-	/* setup the notification */
-	const totalUpdate = _state.pushTaskStatus(`Copy: [${name}] to [${printTarget}]`);
-	totalUpdate('Calculating...', null);
-
 	/* recursively collect the list of all files and directories to be copied */
-	const totalList = [];
-	if (directory) {
+	let totalUpdate = null, totalList = [];
+	if (entry.kind == 'directory') {
+		/* setup the copy notification */
+		totalUpdate = _state.pushTaskStatus(`Copy: [${entry.name}] to [${printTarget}]`);
+		totalUpdate('Calculating...', null);
+
 		let initFailed = false;
-		const fetchAndUpdate = async (src, dst, parent) => {
+		const fetchAndUpdate = async (src, dst, parent, modified) => {
 			if (initFailed) return;
 
 			/* write the directory to the list */
-			totalList.push({ src, dst, kind: 'directory', parent });
+			const index = totalList.length;
+			totalList.push({ src, dst, kind: 'directory', parent, modified, size: 0 });
 
 			/* fetch the content list */
 			let content = null;
@@ -1364,26 +1382,123 @@ _state.copyContent = async (name, directory, target, printTarget) => {
 				const childSrc = buildPath(src, name);
 				const childDst = buildPath(dst, name);
 				if (content[name].kind == 'file')
-					totalList.push({ src: childSrc, dst: childDst, kind: 'file', parent: src });
+					totalList.push({ src: childSrc, dst: childDst, kind: 'file', size: content[name].size, modified: content[name].modified, parent: index });
 				else
-					promises.push(fetchAndUpdate(childSrc, childDst, src));
+					promises.push(fetchAndUpdate(childSrc, childDst, index, content[name].modified));
 			}
 			await Promise.all(promises);
 		};
-		await fetchAndUpdate(_state.fullPath(name), target, null);
+		await fetchAndUpdate(_state.fullPath(entry.name), target, null, entry.modified);
+
 		if (initFailed) {
 			--_state.busy;
 			return;
 		}
+		totalUpdate(0, null, totalList.length);
 	}
 	else
-		totalList.push({ src: _state.fullPath(name), dst: target, kind: 'file', parent: null });
-	totalUpdate(0, null, totalList.length);
+		totalList.push({ src: _state.fullPath(entry.name), dst: target, kind: 'file', size: entry.size, modified: entry.modified, parent: null });
 
-	totalUpdate('Not yet implemented', false);
+	/* helper functions to perform copying */
+	const copyFile = async (fileSize, src, dst) => {
+		const update = _state.pushTaskStatus(`Copy: [${src.substring(1)}]`);
+
+		/* check if the file is too large (does not contribute to the total-failed counter) */
+		if (_state.config.maxUploadSize != null && fileSize > _state.config.maxUploadSize) {
+			update(`Skip: too large [${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.maxUploadSize)}]`, false);
+			return null;
+		}
+		update(0, null);
+
+		/* try to perform the actual copy */
+		let success = false;
+		try {
+			await _state.fs.copy(src, dst, (p) => update(p, null));
+			success = true;
+
+			/* add the entry preemtively to the list (ensure that a new list is created) */
+			const name = dst.substring(dst.lastIndexOf('/') + 1);
+			if (dst == _state.fullPath(name))
+				_state.updateList(_state.list.concat([{ name, kind: 'file', size: fileSize, modified: 0 }]));
+			update('Successfully copied!', true);
+		}
+		catch (e) {
+			update(e, false);
+		}
+		return success;
+	};
+	const copyDirectory = async (src, dst) => {
+		let success = false;
+
+		/* try to create/copy the new directory (not silent, must succeed) */
+		try {
+			await _state.fs.makeDirectory(dst, false);
+			success = true;
+
+			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
+			const name = dst.substring(dst.lastIndexOf('/') + 1);
+			if (dst == _state.fullPath(name))
+				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: 0 }]));
+		}
+		catch (e) {
+			_state.pushTaskStatic(`Create: [${src.substring(1)}]`, e, false);
+		}
+		return success;
+	};
+
+	/* iterate over the list and collect all of the corresponding copy-promises (they take care of batching themselves) */
+	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
+	for (const entry of totalList) {
+		let resolver = null;
+		entry.promise = new Promise((res) => resolver = res);
+
+		promises.push(_state.batch(async () => {
+			/* check if the entry has a dependency and await it (mark the object as skipped if the parent failed; not if already failed) */
+			if (entry.parent != null && !await totalList[entry.parent].promise) {
+				if (totalFailed <= FILE_MAX_FAILURES)
+					++totalSkipped;
+				return resolver(false);
+			}
+
+			/* check if the operation has already failed, in which case nothing
+			*	more will be performed (i.e. just silently skip the task) */
+			if (totalFailed > FILE_MAX_FAILURES)
+				return resolver(false);
+
+			/* try to perform the actual copy */
+			let result = null;
+			if (entry.kind == 'file')
+				result = await copyFile(entry.size, entry.src, entry.dst);
+			else
+				result = await copyDirectory(entry.src, entry.dst);
+			resolver(result ?? false);
+
+			/* update the overall task counter */
+			if (result == null) {
+				++totalSkipped;
+				return;
+			}
+			++totalPerformed;
+			if (!result)
+				++totalFailed;
+			if (totalUpdate != null)
+				totalUpdate(totalPerformed, null, totalList.length);
+		}));
+	}
+	await Promise.all(promises);
+
+	/* clear the busy state */
 	--_state.busy;
-	return;
 
+	/* log the final status message */
+	if (totalUpdate == null)
+		return;
+	if (totalFailed > FILE_MAX_FAILURES)
+		totalUpdate(`Aborted due to too many failed copies (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
+	else if (totalFailed > 0)
+		totalUpdate(`Failed to copy ${totalFailed} out of ${totalPerformed} (${totalSkipped} skipped)`, false);
+	else
+		totalUpdate('Successfully copied!', true);
 }
 
 window.onload = () => {
