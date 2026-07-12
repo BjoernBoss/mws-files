@@ -6,6 +6,7 @@ const TRANSITION_OVERLAY_ANIMATION = 30;
 const FADE_NOTIFICATION_ANIMATION = 3000;
 const FILE_MAX_FAILURES = 12;
 const FILE_OPERATION_BATCH_SIZE = 4;
+const FILE_COPY_JOB_POLL = 1000;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
@@ -115,6 +116,7 @@ _state.fs = {
 		if (!response.headers.has('reservation-id'))
 			return reject('Unexpected server response');
 		id = response.headers.get('reservation-id');
+		console.log(`Uploading file [${path}] with reservation [${id}]`);
 
 		/* try to perform the actual upload request using the given reservation */
 		const request = new XMLHttpRequest();
@@ -154,19 +156,47 @@ _state.fs = {
 	copy: async (path, target, progress) => {
 		let response = null;
 
-		throw 'Not yet implemented';
-
-		/* try to move the object */
-		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}&move=${encodeURIComponent(target)}`, { method: 'PUT' }); }
+		/* try to start the copy operation */
+		try { response = await fetch(`${_state.encodePath(path)}?copy=${encodeURIComponent(target)}`, { method: 'PUT' }); }
 		catch (_) {
 			throw 'Network error';
 		}
 
 		/* validate the response */
-		if (response.ok)
-			console.log(`${kind == 'directory' ? 'Directory' : 'File'} [${path}] moved to [${target}]`);
-		else
+		if (!response.ok)
 			throw await _state.fs.handleFetchResponse(response);
+		if (!response.headers.has('job-id'))
+			throw 'Unexpected server response';
+		id = response.headers.get('job-id');
+		console.log(`Copying file [${path}] to [${target}] as job [${id}]`);
+
+		/* query the job status */
+		await new Promise((resolve, reject) => {
+			const updateStatus = async () => {
+				try {
+					const response = await fetch(`${_state.encodePath(target)}?job=${id}`);
+					if (!response.ok)
+						return reject(_state.fs.handleFetchResponse(response));
+					const body = await response.text();
+
+					/* check if the end has been reached */
+					if (body == '')
+						return resolve();
+					const value = parseFloat(body);
+					if (isFinite(value) && value >= 0.0 && value <= 1.0)
+						progress(value);
+				}
+				catch (_) {
+					return reject('Network error');
+				}
+
+				/* trigger the next job check */
+				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL);
+			};
+
+			/* trigger the initial check */
+			updateStatus();
+		});
 	}
 }
 _state.batch = async (task) => {
