@@ -586,7 +586,7 @@ _state.showEntryMenu = (entry) => {
 
 				/* try to perform the actual move */
 				try {
-					await _state.fs.move(_state.fullPath(entry.name), path, entry.kind);
+					await _state.fs.move(_state.fullPath(entry.name), buildPath(path, entry.name), entry.kind);
 					update('Successfully moved!', true);
 
 					/* apply the update preemtively to the list (ensure that a new list is created) */

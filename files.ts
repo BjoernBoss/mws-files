@@ -12,8 +12,9 @@ const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
+type FileKind = 'file' | 'directory';
 interface DirEntry {
-	kind: 'file' | 'directory';
+	kind: FileKind;
 	size: number;
 	modified: number;
 }
@@ -388,6 +389,73 @@ export class FileShare extends mws.ModuleHandler {
 		if (remaining)
 			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
 	}
+	private checkOrUseReservation(client: mws.ClientRequest, filePath: string, reservation: string): boolean {
+		if (!(filePath in this.reservations.entries))
+			return true;
+
+		/* check if the given reservation is outdated or this owner */
+		if (Date.now() - this.reservations.entries[filePath].age <= MAX_RESERVATION_TIME_MS && this.reservations.entries[filePath].id != reservation) {
+			client.respondConflict({ message: `Path has been reserved` });
+			return false;
+		}
+
+		/* remove the existing reservation */
+		delete this.reservations.entries[filePath];
+		return true;
+	}
+	private async tryReservePath(client: mws.ClientRequest, filePath: string, parent: string, reservation: string): Promise<string | null> {
+		/* check if the path is already reserved */
+		if (!this.checkOrUseReservation(client, filePath, reservation))
+			return null;
+
+		/* already insert the new reservation (to ensure no race condition while applying) */
+		const id = libCrypto.randomUUID();
+		this.reservations.entries[filePath] = { id, age: Date.now() };
+		if (this.reservations.timeout == null)
+			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+
+		try {
+			/* check if the path already exists */
+			const stat = await libFsPromises.stat(filePath);
+			if (!stat.isDirectory() && !stat.isFile())
+				this.warning(`Unsupported file-system object encountered: ${filePath}`);
+			client.respondConflict({ message: `Path already exists` });
+			delete this.reservations.entries[filePath];
+			return null;
+		}
+		catch (err: any) {
+			if (err.code != 'ENOENT') {
+				client.respondInternalError(`Failed to reserve [${filePath}]: ${err.message}`);
+				delete this.reservations.entries[filePath];
+				return null;
+			}
+
+			/* check if the parent directory exists */
+			let parentExists = false;
+			try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); } catch (_) { }
+			if (!parentExists) {
+				client.respondBadRequest({ message: 'Parent does not exist' });
+				delete this.reservations.entries[filePath];
+				return null;
+			}
+			return id;
+		}
+	}
+	private async checkPathKind(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<boolean> {
+		/* let errors propagate out */
+		const stats = await libFsPromises.stat(filePath);
+		if (!(kind == 'directory' ? stats.isDirectory() : stats.isFile())) {
+			client.respondConflict({ message: `Path is not a ${kind}` });
+			return false;
+		}
+
+		if (!stats.isFile() && !stats.isDirectory()) {
+			this.warning(`Unsupported file-system object encountered: ${filePath}`);
+			client.respondNotFound();
+			return false;
+		}
+		return true;
+	}
 	private decodePath(client: mws.ClientRequest, path: string): string | null {
 		if (path == '/')
 			return path;
@@ -438,24 +506,19 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		return out;
 	}
-	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: string, parent: string): Promise<void> {
+	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parent: string): Promise<void> {
 		const reservation = client.url.searchParams.get('reservation') ?? '';
 
 		try {
-			/* check if the path has been reserved and this is the user of the reservation */
-			if (filePath in this.reservations.entries) {
-				if (Date.now() - this.reservations.entries[filePath].age <= MAX_RESERVATION_TIME_MS && this.reservations.entries[filePath].id != reservation)
-					return client.respondConflict({ message: `Path has been reserved` });
-				delete this.reservations.entries[filePath];
-			}
-
-			/* check if a new reservation should be placed, in which case the path needs to be fetched in order to determine if it already exists */
+			/* check if the path is to be reserved or is already reserved (all bad paths are already responded) */
 			if (client.url.searchParams.get('reserve') == 'true') {
-				const stat = await libFsPromises.stat(filePath);
-				if (!stat.isDirectory() && !stat.isFile())
-					this.warning(`Unsupported file-system object encountered: ${filePath}`);
-				return client.respondConflict({ message: `Path already exists` });
+				const id = await this.tryReservePath(client, filePath, parent, reservation);
+				if (id != null)
+					client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
+				return;
 			}
+			if (!this.checkOrUseReservation(client, filePath, reservation))
+				return;
 
 			/* check if a directory is to be created */
 			if (kind == 'directory') {
@@ -469,26 +532,10 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
-			/* check if the path does not yet exist, but is being reserved */
-			if (err.code == 'ENOENT') {
-				if (client.url.searchParams.get('reserve') != 'true')
-					return client.respondNotFound();
-
-				/* check if the parent directory exists */
-				let parentExists = false;
-				try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); } catch (_) { }
-				if (!parentExists)
-					return client.respondNotFound();
-
-				/* insert the new reservation */
-				const id = libCrypto.randomUUID();
-				this.reservations.entries[filePath] = { id, age: Date.now() };
-				if (this.reservations.timeout == null)
-					this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
-				return client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
-			}
+			if (err.code == 'ENOENT')
+				return client.respondNotFound();
 			if (err.code != 'EEXIST')
-				return client.respondInternalError(`Failed to create/reserve ${kind} [${filePath}]: ${err.message}`);
+				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err.message}`);
 
 			/* check if the directory already existed and should fail silently */
 			if (kind == 'directory' && client.url.searchParams.get('silent') == 'true') {
@@ -500,22 +547,46 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondConflict({ message: `Path already exists` });
 		}
 	}
-	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: string): Promise<void> {
+	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
 		const move = client.url.searchParams.get('move') ?? null;
 		if (move == null)
 			return client.respondBadRequest({ message: 'PUT requires operation target' });
 
 		/* decode the path */
-		let targetPath: string = '';
+		let target: string = '', fileTarget: string = '';
 		try {
-			targetPath = this.fileStorage(decodeURIComponent(move));
+			target = mws.sanitize(decodeURIComponent(move), false);
+			fileTarget = this.fileStorage(target);
 		} catch (_) {
 			return client.respondBadRequest({ message: `Invalid path encoding` });
 		}
 
-		return client.respondBadRequest({ message: `Not yet implemented` });
+		/* validate the source kind */
+		try {
+			if (!await this.checkPathKind(client, filePath, kind))
+				return;
+		} catch (err: any) {
+			return client.respondInternalError(`Failed to copy/move [${filePath}]: ${err.message}`);
+		}
+
+		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
+		const reservation = client.url.searchParams.get('reservation') ?? '';
+		const id = await this.tryReservePath(client, fileTarget, mws.splitFileName(target)[0], reservation);
+		if (id == null)
+			return;
+
+		/* perform the actual move (ignore any race conditions, if the path is modified up to the copy/move) and clear the reservation */
+		try {
+			await libFsPromises.rename(filePath, fileTarget);
+			client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
+		}
+		catch (err: any) {
+			client.respondInternalError(`Failed to copy/move [${filePath}]: ${err.message}`);
+		}
+		if (this.reservations.entries[filePath].id == id)
+			delete this.reservations.entries[filePath];
 	}
-	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: string): Promise<void> {
+	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
 		/* try to remove the object */
 		try {
 			if (kind == 'directory')
@@ -530,11 +601,8 @@ export class FileShare extends mws.ModuleHandler {
 
 			/* check if its a kind mis-match */
 			try {
-				const stats = await libFsPromises.stat(filePath);
-				if (!stats.isFile() && !stats.isDirectory())
-					this.warning(`Unsupported file-system object encountered: ${filePath}`);
-				if (!(kind == 'directory' ? stats.isDirectory() : stats.isFile()))
-					return client.respondConflict({ message: `Path is not a ${kind}` });
+				if (!await this.checkPathKind(client, filePath, kind))
+					return;
 			}
 			catch (_err: any) {
 				if (_err.code == 'ENOENT')
@@ -611,55 +679,48 @@ export class FileShare extends mws.ModuleHandler {
 			return this.handleDelete(client, filePath, (kind ?? 'file'));
 
 		/* try to serve it as a file (root cannot be served as a file) */
-		if (kind == null || kind == 'file') {
-			if (path != '/') {
-				const headers: Record<string, string> = { 'Kind': 'file' };
+		if ((kind == null || kind == 'file') && path != '/') {
+			const headers: Record<string, string> = { 'Kind': 'file' };
 
-				/* check if its supposed to be a download */
-				if (client.url.searchParams.get('download') == 'true')
-					headers['Content-Disposition'] = `attachment; filename="${mws.splitFileName(path)[1]}"`;
+			/* check if its supposed to be a download */
+			if (client.url.searchParams.get('download') == 'true')
+				headers['Content-Disposition'] = `attachment; filename="${mws.splitFileName(path)[1]}"`;
 
-				/* try to perform the actual serving (check freshness at all times, as the file might be changed) */
-				if (await client.tryRespondFile(filePath, { checkFreshness: true, headers }))
-					return;
-			}
-
-			/* check if a file-kind was expected */
-			if (kind == 'file')
-				return client.respondConflict({ message: `Path is not a file` });
+			/* try to perform the actual serving (check freshness at all times, as the file might be changed) */
+			if (await client.tryRespondFile(filePath, { checkFreshness: true, headers }))
+				return;
 		}
 
-		/* try to read the directory state */
-		let list: Record<string, DirEntry> = {};
-		try { list = await this.fetchDirectoryList(filePath); } catch (err: any) {
-			if (err.code == 'ENOENT')
-				return client.respondNotFound();
-			if (err.code != 'ENOTDIR')
-				return client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
-
-			/* check if its an unsupported kind or if it was a file (if nothing was requested, must have been a race condition, just ignore) */
+		/* try to serve it as a directory */
+		if (kind == null || kind == 'directory') {
 			try {
-				const stats = await libFsPromises.stat(filePath);
-				if (kind == 'directory' && stats.isFile())
-					return client.respondConflict({ message: `Path is not a directory` });
-				if (!stats.isFile() && !stats.isDirectory())
-					this.warning(`Unsupported file-system object encountered: ${filePath}`);
-			} catch (_) { }
-			return client.respondNotFound();
+				/* try to read the directory state */
+				const list = await this.fetchDirectoryList(filePath);
+
+				/* check if the directory should be served in raw */
+				if (client.url.searchParams.get('raw') == 'true')
+					return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
+
+				/* check if the directory is to be downloaded and otherwise create the directory view */
+				if (client.url.searchParams.get('download') == 'true') {
+					const [_, name] = mws.splitFileName(path);
+					return this.handleDownload(client, (name == '' ? 'directory' : name), filePath, list);
+				}
+				return this.buildView(client, path, list);
+			} catch (err: any) {
+				if (err.code == 'ENOENT')
+					return client.respondNotFound();
+				if (err.code != 'ENOTDIR')
+					return client.respondInternalError(`Failed to serve path [${filePath}]: ${err.message}`);
+			}
 		}
 
-		/* check if the directory should be served in raw */
-		if (client.url.searchParams.get('raw') == 'true')
-			return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
-
-		/* check if the directory is to be downloaded */
-		if (client.url.searchParams.get('download') == 'true') {
-			const [_, name] = mws.splitFileName(path);
-			return this.handleDownload(client, (name == '' ? 'directory' : name), filePath, list);
-		}
-
-		/* build the view for the directory */
-		return this.buildView(client, path, list);
+		/* check if its an unsupported kind (if the kind matches now, it must be a race condition: ignore) */
+		try {
+			if (!await this.checkPathKind(client, filePath, kind ?? 'file'))
+				return;
+		} catch (_) { }
+		return client.respondNotFound();
 	}
 	private staticPath(client: mws.ClientRequest, path: string): string {
 		return client.makePath(this.cache.immutable(this.name, mws.joinSanitized(Endpoints.static, path)));
