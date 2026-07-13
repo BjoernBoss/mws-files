@@ -322,52 +322,6 @@ _state.pushNotification = (body) => {
 			.onfinish = () => close.onclick();
 	};
 }
-_state.pushTaskStatus = (caption) => {
-	const upload = buildElement({ class: 'task' });
-	upload.appendChild(buildElement({ class: 'text', text: caption }));
-	const info = upload.appendChild(buildElement({ class: 'info' }));
-
-	const textDetail = info.appendChild(buildElement({ class: 'text', text: '...' }));
-	const progressDetail = info.appendChild(buildElement({ class: 'progress hidden' }));
-
-	const bar = progressDetail.appendChild(buildElement({ class: 'bar' }));
-	const fill = bar.appendChild(buildElement({ class: 'fill' }));
-	const digits = progressDetail.appendChild(buildElement({ class: 'digits', text: '0%' }));
-
-	/* create the actual notification and return the handler callback */
-	const fadeOut = _state.pushNotification(upload);
-	return (detail, status, total) => {
-		/* update the content visibility and the body */
-		if (typeof detail == 'number') {
-			textDetail.classList.add('hidden');
-			progressDetail.classList.remove('hidden');
-
-			if (total == null) {
-				const value = `${Math.round(detail * 100)}%`;
-				fill.style.width = value;
-				digits.innerText = value;
-			}
-			else {
-				fill.style.width = `${Math.round((detail * 100) / total)}%`;
-				digits.innerText = `${detail} / ${total}`;
-			}
-		}
-		else {
-			textDetail.classList.remove('hidden');
-			progressDetail.classList.add('hidden');
-
-			textDetail.innerText = detail;
-		}
-
-		/* update the colors and fading based on the status */
-		if (status == null)
-			return;
-		textDetail.classList.add(status ? 'success' : 'failure');
-		progressDetail.classList.add(status ? 'success' : 'failure');
-		if (status)
-			fadeOut();
-	};
-}
 _state.pushTaskProgress = () => {
 	const upload = buildElement({ class: 'task' });
 	const textCaption = upload.appendChild(buildElement({ class: 'text', text: '...' }));
@@ -576,7 +530,7 @@ _state.showEntryMenu = (entry) => {
 		if (checkSettled && settled) return false;
 		if (_state.list.indexOf(entry) >= 0)
 			return true;
-		_state.pushStaticText(`[${entry.name}] does not exist anymore`, false);
+		_state.pushStaticText(`'${entry.name}' does not exist anymore`, false);
 		if (!settled)
 			_state.updateOverlay('menu-overlay', null);
 		return false;
@@ -610,7 +564,7 @@ _state.showEntryMenu = (entry) => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
 			navigator.clipboard.writeText(new URL(_state.encodePath(_state.fullPath(entry.name)), document.location).href)
-				.then(() => _state.pushStaticText('Copied to Clipboard!', true))
+				.then(() => _state.pushStaticText('Copied to clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
 		};
 	}
@@ -628,18 +582,18 @@ _state.showEntryMenu = (entry) => {
 				entry.html.name.innerText = entry.name;
 				if (fileName == null || fileName == entry.name)
 					return;
-				const update = _state.pushTaskStatus(`Rename: [${entry.name}] to [${fileName}]`);
-				update('Renaming...', null);
+				const update = _state.pushTaskProgress();
+				update({ caption: `Rename '${entry.name}' to '${fileName}'`, detail: 'Renaming...' });
 
 				/* try to perform the actual move */
 				try {
 					await _state.fs.move(_state.fullPath(entry.name), _state.fullPath(fileName), entry.kind);
-					update('Successfully renamed!', true);
+					update({ detail: 'Successfully renamed!', status: true });
 
 					/* apply the update preemtively to the list (ensure that a new list is created) */
 					_state.updateList(_state.list.filter((e) => e != entry).concat([{ name: fileName, kind: entry.kind, size: entry.size, modified: entry.modified }]));
 				}
-				catch (e) { update(e, false); }
+				catch (e) { update({ detail: e, status: false }); }
 			});
 		};
 	}
@@ -693,18 +647,18 @@ _state.showEntryMenu = (entry) => {
 			_state.showMoveCopyPicker(true, async (path) => {
 				if (!validateEntry(false))
 					return;
-				const update = _state.pushTaskStatus(`Move: [${entry.name}] to [${path}]`);
-				update('Moving...', null);
+				const update = _state.pushTaskProgress();
+				update({ caption: `Move '${entry.name}' to '${path}'`, detail: 'Moving...' });
 
 				/* try to perform the actual move */
 				try {
 					await _state.fs.move(_state.fullPath(entry.name), buildPath(path, entry.name), entry.kind);
-					update('Successfully moved!', true);
+					update({ detail: 'Successfully moved!', status: true });
 
 					/* apply the update preemtively to the list (ensure that a new list is created) */
 					_state.updateList(_state.list.filter((e) => e != entry));
 				}
-				catch (e) { update(e, false); }
+				catch (e) { update({ detail: e, status: false }); }
 			});
 		};
 	}
@@ -772,7 +726,7 @@ _state.showCreateMenu = () => {
 			list.push({ kind: 'file', size: file.size, path: `/${(path != '') ? path : file.name}`, file });
 		}
 		input.files = null;
-		_state.uploadContent(list, (directory ? 'Selected directory' : 'Selected files'));
+		_state.uploadContent(list, (directory ? 'selected directory' : 'selected files'));
 	};
 	content.children[0].onclick = () => {
 		if (settled) return;
@@ -879,7 +833,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 			updateView(target);
 		}).catch((e) => {
 			if (settled) return;
-			_state.pushTaskStatic(`Reading [${target}]`, e, false);
+			_state.pushTaskStatic(`Enumerating '${target}' error`, e, false);
 			_state.updateOverlay('pick-overlay', null);
 		});
 	};
@@ -995,7 +949,7 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		/* check if the name is valid */
 		if (fileName.match(VALID_NAME_REGEX))
 			return cleanupRename(fileName);
-		_state.pushStaticText(`[${fileName}] is not a valid name (No: \\ / ? : * " < > | )`, false);
+		_state.pushStaticText(`'${fileName}' is not a valid name (No: \\ / ? : * " < > | )`, false);
 		return cleanupRename(null);
 	};
 
@@ -1143,15 +1097,15 @@ _state.createDirectory = (element, path, callback) => {
 
 		const fullPath = buildPath(path, fileName);
 		callback(new Promise((resolve, reject) => {
-			const update = _state.pushTaskStatus(`Create: [${path == _state.config.path ? fileName : fullPath}]`);
-			update('Creating...', null);
+			const update = _state.pushTaskProgress();
+			update({ caption: `Create '${path == _state.config.path ? fileName : fullPath}'`, detail: 'Creating...' });
 			_state.batch(() => _state.fs.makeDirectory(fullPath, false))
 				.then(() => {
-					update('Created!', true);
+					update({ detail: 'Directory created!', status: true });
 					resolve(fileName);
 				})
 				.catch((e) => {
-					update(e, false);
+					update({ detail: e, status: false });
 					return reject();
 				});
 		}));
@@ -1166,89 +1120,86 @@ _state.uploadContent = async (list, what) => {
 	/* mark the state as busy */
 	++_state.busy;
 
-	/* check if its a complex list (larger than batch-size or directories need to be created), in which case they have to be fetched first */
-	let totalUpdate = null, totalList = [];
-	if (list.length > FILE_OPERATION_BATCH_SIZE || list.findIndex((e) => e.kind == 'directory' || e.path.lastIndexOf('/') > 0) >= 0) {
-		totalUpdate = _state.pushTaskStatus(`Upload: [${what}]`);
-		totalUpdate('Calculating...', null);
+	/* setup the notification */
+	const totalUpdate = _state.pushTaskProgress();
+	totalUpdate({ caption: `Upload ${what}`, detail: 'Calculating...' });
 
-		/* helper to ensure all directories are created */
-		let directories = {};
-		const fetchDirectory = (path) => {
-			/* the root is always considered valid */
-			if (path.length <= 1)
-				return null;
-			if (path in directories)
-				return directories[path];
-			const parent = path.substring(0, path.lastIndexOf('/'));
+	/* collect the list of all uploads to be performed */
+	const totalList = [], directories = {};
+	const fetchDirectory = (path) => {
+		/* the root is always considered valid */
+		if (path.length <= 1)
+			return null;
+		if (path in directories)
+			return directories[path];
+		const parent = path.substring(0, path.lastIndexOf('/'));
 
-			/* check if its an entry in the current list, which is implicitly considered to exist (silently ignore errors) */
-			if (parent == '') {
-				const next = path.substring(1);
-				const index = _state.list.findIndex((e) => e.name == next);
-				if (index >= 0 && _state.list[index].kind == 'directory')
-					return (directories[path] = null);
-			}
+		/* check if its an entry in the current list, which is implicitly considered to exist (silently ignore errors) */
+		if (parent == '') {
+			const next = path.substring(1);
+			const index = _state.list.findIndex((e) => e.name == next);
+			if (index >= 0 && _state.list[index].kind == 'directory')
+				return (directories[path] = null);
+		}
 
-			/* ensure that the parent exists (before writing self to the list) and then create the new entry */
-			totalList.push({ kind: 'directory', path, parent: fetchDirectory(parent) });
-			return (directories[path] = totalList.length - 1);
-		};
-		const unpackEntry = async (entry) => {
-			/* add the file and its dependency onto the parent */
-			if (entry.kind == 'file') {
-				const parent = fetchDirectory(entry.path.substring(0, entry.path.lastIndexOf('/')));
-				totalList.push({ kind: 'file', path: entry.path, size: entry.size, parent, file: entry.file });
-				return;
-			}
+		/* ensure that the parent exists (before writing self to the list) and then create the new entry */
+		totalList.push({ kind: 'directory', path, parent: fetchDirectory(parent) });
+		return (directories[path] = totalList.length - 1);
+	};
+	const unpackEntry = async (entry) => {
+		/* add the file and its dependency onto the parent */
+		if (entry.kind == 'file') {
+			const parent = fetchDirectory(entry.path.substring(0, entry.path.lastIndexOf('/')));
+			totalList.push({ kind: 'file', path: entry.path, size: entry.size, parent, file: entry.file });
+			return;
+		}
 
-			/* add the directory and process all children */
-			fetchDirectory(entry.path);
-			const promises = [];
-			for (const child of await entry.children())
-				promises.push(unpackEntry(child));
-			await Promise.all(promises);
-		};
-
-		/* collect all of the list entries */
+		/* add the directory and process all children */
+		fetchDirectory(entry.path);
 		const promises = [];
-		for (const entry of list)
-			promises.push(unpackEntry(entry));
+		for (const child of await entry.children())
+			promises.push(unpackEntry(child));
 		await Promise.all(promises);
-		totalUpdate(0, null, totalList.length);
-	}
-	else
-		totalList = list;
+	};
+	const promises = [];
+	for (const entry of list)
+		promises.push(unpackEntry(entry));
+	await Promise.all(promises);
+	totalUpdate({ additional: `0/${totalList.length}` });
 
 	/* helper functions to perform uploads */
 	const uploadFile = async (file) => {
-		const update = _state.pushTaskStatus(`Upload: [${file.path.substring(1)}]`);
+		totalUpdate({ detail: file.path.substring(1), progress: null });
 
 		/* check if the file is too large (does not contribute to the total-failed counter) */
 		if (_state.config.maxUploadSize != null && file.size > _state.config.maxUploadSize) {
-			update(`Skip: too large [${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)}]`, false);
+			_state.pushTaskStatic(`Upload '${file.path.substring(1)}'`, `Skipping too large file (${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
 			return null;
 		}
-		update(0, null);
 
 		/* try to perform the actual upload */
-		let success = false;
+		let success = false, progressed = false;
 		try {
-			await _state.fs.upload(_state.fullPath(file.path), (p) => update(p, null), file.file);
+			await _state.fs.upload(_state.fullPath(file.path), (p) => {
+				if ((p <= 0 || p >= 1) && !progressed) return;
+				progressed = true;
+				totalUpdate({ progress: { percent: p } });
+			}, file.file);
 			success = true;
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
 			const name = file.path.substring(file.path.lastIndexOf('/') + 1);
 			if (file.path.length == name.length + 1)
 				_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: 0 }]));
-			update('Successfully uploaded!', true);
 		}
 		catch (e) {
-			update(e, false);
+			_state.pushTaskStatic(`Upload '${file.path.substring(1)}'`, e, false);
 		}
 		return success;
 	};
 	const uploadDirectory = async (path) => {
+		totalUpdate({ detail: path.substring(1), progress: null });
+
 		/* try to create the new directory */
 		let success = false;
 		try {
@@ -1261,29 +1212,27 @@ _state.uploadContent = async (list, what) => {
 				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: 0 }]));
 		}
 		catch (e) {
-			_state.pushTaskStatic(`Create: [${path.substring(1)}]`, e, false);
+			_state.pushTaskStatic(`Upload '${path.substring(1)}'`, e, false);
 		}
 		return success;
 	};
 
-	/* iterate over the list and collect all of the corresponding upload-promises (they take care of batching themselves) */
-	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
+	/* iterate over the list and perform the uploads (shared batching across all remote operations) */
+	let totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
-		let resolver = null;
-		entry.promise = new Promise((res) => resolver = res);
-
-		promises.push(_state.batch(async () => {
-			/* check if the entry has a dependency and await it (mark the object as skipped if the parent failed; not if already failed) */
-			if (entry.parent != null && !await totalList[entry.parent].promise) {
+		entry.success = await _state.batch(async () => {
+			/* check if the entry has a parent and ensure it succeeded (mark the
+			*	object as skipped if the parent failed; not if already failed) */
+			if (entry.parent != null && !totalList[entry.parent].success) {
 				if (totalFailed <= FILE_MAX_FAILURES)
 					++totalSkipped;
-				return resolver(false);
+				return false;
 			}
 
 			/* check if the operation has already failed, in which case nothing
 			*	more will be performed (i.e. just silently skip the task) */
 			if (totalFailed > FILE_MAX_FAILURES)
-				return resolver(false);
+				return false;
 
 			/* try to perform the actual upload */
 			let result = null;
@@ -1291,34 +1240,30 @@ _state.uploadContent = async (list, what) => {
 				result = await uploadFile(entry);
 			else
 				result = await uploadDirectory(entry.path);
-			resolver(result ?? false);
 
 			/* update the overall task counter */
 			if (result == null) {
 				++totalSkipped;
-				return;
+				return false;
 			}
-			++totalPerformed;
 			if (!result)
 				++totalFailed;
-			if (totalUpdate != null)
-				totalUpdate(totalPerformed, null, totalList.length);
-		}));
+			totalUpdate({ additional: `${++totalPerformed}/${totalList.length}` });
+			return result;
+		});
 	}
-	await Promise.all(promises);
 
 	/* clear the busy state */
 	--_state.busy;
 
 	/* log the final status message */
-	if (totalUpdate == null)
-		return;
+	totalUpdate({ progress: null });
 	if (totalFailed > FILE_MAX_FAILURES)
-		totalUpdate(`Aborted due to too many failed uploads (${totalFailed} failed out of ${totalPerformed} performed of required ${totalList.length})`, false);
+		totalUpdate({ detail: `Aborted due to too many failed uploads (Failed: ${totalFailed})`, status: false });
 	else if (totalFailed > 0)
-		totalUpdate(`Failed to upload ${totalFailed} out of ${totalPerformed} (${totalSkipped} skipped)`, false);
+		totalUpdate({ detail: `Failed to upload ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, status: false });
 	else
-		totalUpdate('Successfully uploaded!', true);
+		totalUpdate({ detail: 'Successfully uploaded!', status: true });
 }
 _state.removeContent = async (entry) => {
 	if (!_state.config.delete)
@@ -1492,18 +1437,22 @@ _state.copyContent = async (entry, target, printTarget) => {
 
 	/* helper functions to perform copying */
 	const copyFile = async (fileSize, src, dst) => {
-		totalUpdate({ detail: src.substring(1), progress: { percent: 0 } });
+		totalUpdate({ detail: src.substring(1), progress: null });
 
 		/* check if the file is too large (does not contribute to the total-failed counter) */
 		if (_state.config.maxUploadSize != null && fileSize > _state.config.maxUploadSize) {
-			_state.pushTaskStatic(`Copy '${src.substring(1)}'`, `Skip: too large [${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.maxUploadSize)}]`, false);
+			_state.pushTaskStatic(`Copy '${src.substring(1)}'`, `Skipping too large file (${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
 			return null;
 		}
 
 		/* try to perform the actual copy */
-		let success = false;
+		let success = false, progressed = false;
 		try {
-			await _state.fs.copy(_state.fullPath(src), dst, (p) => totalUpdate({ progress: { percent: p } }));
+			await _state.fs.copy(_state.fullPath(src), dst, (p) => {
+				if ((p <= 0 || p >= 1) && !progressed) return;
+				progressed = true;
+				totalUpdate({ progress: { percent: p } });
+			});
 			success = true;
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
@@ -1540,7 +1489,8 @@ _state.copyContent = async (entry, target, printTarget) => {
 	let totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
 		entry.success = await _state.batch(async () => {
-			/* check if the entry has a parent and ensure it succeeded (mark the object as skipped if the parent failed; not if already failed) */
+			/* check if the entry has a parent and ensure it succeeded (mark the
+			*	object as skipped if the parent failed; not if already failed) */
 			if (entry.parent != null && !totalList[entry.parent].success) {
 				if (totalFailed <= FILE_MAX_FAILURES)
 					++totalSkipped;
@@ -1653,7 +1603,7 @@ window.onload = () => {
 						return { kind: 'file', path, size: file.size, file };
 					}
 					catch (_) {
-						_state.pushStaticText(`Error processing dropped file [${path}]`, false);
+						_state.pushStaticText(`Error processing dropped file '${path}'`, false);
 						return null;
 					}
 				}
@@ -1666,7 +1616,7 @@ window.onload = () => {
 					while (true) {
 						let entries = null;
 						try { entries = await new Promise((resolve, reject) => reader.readEntries(resolve, reject)); } catch (_) {
-							_state.pushStaticText(`Error processing children of dropped directory [${path}]`, false);
+							_state.pushStaticText(`Error processing children of dropped directory '${path}'`, false);
 							return [];
 						}
 
@@ -1700,7 +1650,7 @@ window.onload = () => {
 			(async () => {
 				for (const entry of entries)
 					await entry;
-				_state.uploadContent(list, 'Dropped content');
+				_state.uploadContent(list, 'dropped content');
 			})();
 		};
 
