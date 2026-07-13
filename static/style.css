@@ -615,23 +615,12 @@
 	display: flex;
 	flex-direction: column;
 	gap: 0.25em;
-}
-
-.success {
-	color: #30a080;
-}
-
-.failure {
-	color: #b05050;
-}
-
-.task .info {
-	color: #0060c0;
-	align-self: end;
+	align-items: end;
 }
 
 .task .text {
 	width: 100%;
+	text-align: end;
 }
 
 .task .text.hidden {
@@ -670,6 +659,18 @@
 	background: currentColor;
 	transition: width 200ms;
 	width: 0%;
+}
+
+.status-base {
+	color: #0060c0;
+}
+
+.status-success {
+	color: #30a080;
+}
+
+.status-failure {
+	color: #b05050;
 }
 
 .load-icon {
