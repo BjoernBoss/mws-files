@@ -10,6 +10,7 @@ import * as libZlib from "zlib";
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
+const WATCHER_MIN_CHANGE_PERIOD_MS = 2000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
 type FileKind = 'file' | 'directory';
@@ -20,9 +21,11 @@ interface DirEntry {
 }
 interface DirListener {
 	ws: Set<mws.ClientSocket>;
-	timeout: NodeJS.Timeout | null;
+	grace: NodeJS.Timeout | null;
+	defer: NodeJS.Timeout | null;
 	close: () => void;
 	settled: boolean;
+	last: number;
 }
 
 class Zipper {
@@ -832,32 +835,42 @@ export class FileShare extends mws.ModuleHandler {
 				const watcher = libFs.watch(filePath);
 
 				const entry: DirListener = {
-					timeout: null,
+					grace: null,
+					defer: null,
+					last: Date.now() - WATCHER_MIN_CHANGE_PERIOD_MS,
 					ws: new Set<mws.ClientSocket>(),
 					close: () => {
+						delete this.listener[path];
+						entry.settled = true;
 						watcher.close();
 						this.info(`Stopped listening for changes: [${filePath}]`);
+
+						/* clear the grace and defer timeout, if it exists */
+						if (entry.grace != null)
+							clearTimeout(entry.grace);
+						if (entry.defer != null)
+							clearTimeout(entry.defer);
 					},
 					settled: false
 				};
+				this.listener[path] = entry;
+
+				/* register the watcher listener */
 				const cleanup = (err: any, removed: boolean) => {
 					this.error(`Error while watching path [${filePath}]: ${err.message}`);
 
 					/* remove the entry and notify all listener */
-					delete this.listener[path];
 					entry.close();
-					entry.settled = true;
 					for (const ws of entry.ws) {
 						ws.send(removed ? 'removed' : 'error');
 						ws.close();
 					}
 				};
-				this.listener[path] = entry;
+				const changed = () => {
+					entry.last = Date.now(), entry.defer = null;
 
-				/* register the watcher listener */
-				watcher.on('change', () => {
-					/* ensure that the directory still exists */
 					try {
+						/* ensure that the directory still exists */
 						const stats = libFs.statSync(filePath);
 						if (!stats.isDirectory())
 							throw new Error(`Can only watch directories`);
@@ -867,7 +880,18 @@ export class FileShare extends mws.ModuleHandler {
 					catch (err: any) {
 						cleanup(err, (err.code == 'ENOENT'));
 					}
+				};
 
+				watcher.on('change', () => {
+					if (entry.defer != null)
+						return;
+
+					/* check if the signal should be deferred */
+					const timeSinceLast = Date.now() - entry.last;
+					if (timeSinceLast < WATCHER_MIN_CHANGE_PERIOD_MS)
+						entry.defer = setTimeout(() => changed(), WATCHER_MIN_CHANGE_PERIOD_MS - timeSinceLast);
+					else
+						changed();
 				});
 				watcher.on('error', (err: any) => cleanup(err, false));
 			}
@@ -882,21 +906,17 @@ export class FileShare extends mws.ModuleHandler {
 		/* add the web-socket to the listener and check if the closing timeout needs to be stopped */
 		const entry = this.listener[path];
 		entry.ws.add(client);
-		if (entry.timeout != null)
-			clearTimeout(entry.timeout);
-		entry.timeout = null;
+		if (entry.grace != null)
+			clearTimeout(entry.grace);
+		entry.grace = null;
 
 		/* no need to listen for data, as this is only a notification channel */
 		client.on('close', () => {
 			entry.ws.delete(client);
 
 			/* check if this was the last listener, and the watcher should be closed */
-			if (entry.ws.size != 0 || entry.settled)
-				return;
-			entry.timeout = setTimeout(() => {
-				delete this.listener[path];
-				entry.close();
-			}, WATCHER_GRACE_MS);
+			if (entry.ws.size == 0 && !entry.settled)
+				entry.grace = setTimeout(() => entry.close(), WATCHER_GRACE_MS);
 		});
 	}
 	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
@@ -929,27 +949,18 @@ export class FileShare extends mws.ModuleHandler {
 			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
 	}
 	protected override async handleStop(): Promise<void> {
-		/* close all sockets (no new sockets can arrive anymore once the stop-handler has started) */
+		/* close all sockets and listener (no new sockets can arrive anymore once the stop-handler has started) */
 		const promises: Promise<void>[] = [];
 		for (const path in this.listener) {
 			const entry = this.listener[path];
-			entry.settled = true;
 
+			entry.close();
 			for (const ws of entry.ws) {
 				ws.send('close');
 				promises.push(ws.close());
 			}
 		}
 		await Promise.all(promises);
-
-		/* reset all timers (after the closes have been processed, as they may otherwise re-start the last timer) */
-		for (const path in this.listener) {
-			const entry = this.listener[path];
-
-			if (entry.timeout != null)
-				clearTimeout(entry.timeout);
-			entry.close();
-		}
 
 		/* reset any potential reservation-clear timers */
 		if (this.reservations.timeout != null)
