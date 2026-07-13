@@ -10,7 +10,7 @@ import * as libZlib from "zlib";
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
 const WATCHER_GRACE_MS = 30 * 1000;
-const WATCHER_MIN_CHANGE_PERIOD_MS = 2000;
+const WATCHER_COALESCE_PERIOD_MS = 2000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
 type FileKind = 'file' | 'directory';
@@ -23,8 +23,10 @@ interface DirListener {
 	ws: Set<mws.ClientSocket>;
 	grace: NodeJS.Timeout | null;
 	defer: NodeJS.Timeout | null;
+	children: Map<string, libFs.FSWatcher>;
 	close: () => void;
 	settled: boolean;
+	stamp: number;
 	last: number;
 }
 
@@ -837,13 +839,20 @@ export class FileShare extends mws.ModuleHandler {
 				const entry: DirListener = {
 					grace: null,
 					defer: null,
-					last: Date.now() - WATCHER_MIN_CHANGE_PERIOD_MS,
+					stamp: 0,
+					last: Date.now() - WATCHER_COALESCE_PERIOD_MS,
 					ws: new Set<mws.ClientSocket>(),
+					children: new Map<string, libFs.FSWatcher>(),
 					close: () => {
 						delete this.listener[path];
 						entry.settled = true;
 						watcher.close();
 						this.info(`Stopped listening for changes: [${filePath}]`);
+
+						/* close all of the child watchers */
+						for (const child of entry.children.values())
+							child.close();
+						entry.children.clear();
 
 						/* clear the grace and defer timeout, if it exists */
 						if (entry.grace != null)
@@ -867,35 +876,69 @@ export class FileShare extends mws.ModuleHandler {
 						ws.close();
 					}
 				};
-				const changed = () => {
-					if (entry.settled) return;
-					entry.last = Date.now(), entry.defer = null;
 
-					try {
-						/* ensure that the directory still exists */
-						const stats = libFs.statSync(filePath);
-						if (!stats.isDirectory())
-							throw new Error(`Can only watch directories`);
-						for (const ws of entry.ws)
-							ws.send('change');
+				/* synchronize the child watchers with the given directory state (changes within immediate
+				*	sub-directories modify the listed metadata - item count and modified time - but do not trigger
+				*	the main watcher on all platforms; child errors are non-fatal, as any structural change of the
+				*	child will trigger the main watcher, which re-synchronizes the child watchers) */
+				const syncChildren = (list: Record<string, DirEntry>) => {
+					for (const [name, child] of entry.children) {
+						if (list[name]?.kind == 'directory')
+							continue;
+						child.close();
+						entry.children.delete(name);
 					}
-					catch (err: any) {
-						cleanup(err, (err.code == 'ENOENT'));
+					for (const name in list) {
+						if (list[name].kind != 'directory' || entry.children.has(name))
+							continue;
+						try {
+							const child = libFs.watch(mws.joinNative(filePath, name));
+							child.on('change', () => triggered());
+							child.on('error', () => {
+								child.close();
+								if (entry.children.get(name) == child)
+									entry.children.delete(name);
+							});
+							entry.children.set(name, child);
+						} catch (_) { }
 					}
 				};
+				const changed = (broadcast: boolean) => {
+					if (entry.settled) return;
+					if (broadcast)
+						entry.last = Date.now(), entry.defer = null;
+					const stamp = ++entry.stamp;
 
-				watcher.on('change', () => {
+					/* fetch the new directory state to be broadcasted and re-synchronize the child
+					*	watchers (discard outdated states, if another change has started in the meantime) */
+					this.fetchDirectoryList(filePath).then((list) => {
+						if (entry.settled || entry.stamp != stamp)
+							return;
+						syncChildren(list);
+
+						if (!broadcast) return;
+						const state = JSON.stringify(list);
+						for (const ws of entry.ws)
+							ws.send(state);
+					}).catch((err: any) => cleanup(err, (err.code == 'ENOENT')));
+				};
+				const triggered = () => {
 					if (entry.settled || entry.defer != null)
 						return;
 
 					/* check if the signal should be deferred */
 					const timeSinceLast = Date.now() - entry.last;
-					if (timeSinceLast < WATCHER_MIN_CHANGE_PERIOD_MS)
-						entry.defer = setTimeout(() => changed(), WATCHER_MIN_CHANGE_PERIOD_MS - timeSinceLast);
+					if (timeSinceLast < WATCHER_COALESCE_PERIOD_MS)
+						entry.defer = setTimeout(() => changed(true), WATCHER_COALESCE_PERIOD_MS - timeSinceLast);
 					else
-						changed();
-				});
+						changed(true);
+				};
+
+				watcher.on('change', () => triggered());
 				watcher.on('error', (err: any) => cleanup(err, false));
+
+				/* trigger a silent change event, to ensure the child waters are configured */
+				changed(false);
 			}
 			catch (err: any) {
 				this.error(`Failed watching path [${filePath}]: ${err.message}`);
