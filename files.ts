@@ -508,7 +508,7 @@ export class FileShare extends mws.ModuleHandler {
 			return null;
 		}
 
-		return out;
+		return mws.sanitize(out, false);
 	}
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
 		const out: Record<string, DirEntry> = {};
@@ -857,6 +857,7 @@ export class FileShare extends mws.ModuleHandler {
 
 				/* register the watcher listener */
 				const cleanup = (err: any, removed: boolean) => {
+					if (entry.settled) return;
 					this.error(`Error while watching path [${filePath}]: ${err.message}`);
 
 					/* remove the entry and notify all listener */
@@ -867,6 +868,7 @@ export class FileShare extends mws.ModuleHandler {
 					}
 				};
 				const changed = () => {
+					if (entry.settled) return;
 					entry.last = Date.now(), entry.defer = null;
 
 					try {
@@ -883,7 +885,7 @@ export class FileShare extends mws.ModuleHandler {
 				};
 
 				watcher.on('change', () => {
-					if (entry.defer != null)
+					if (entry.settled || entry.defer != null)
 						return;
 
 					/* check if the signal should be deferred */

@@ -6,7 +6,8 @@ const TRANSITION_OVERLAY_ANIMATION = 30;
 const FADE_NOTIFICATION_ANIMATION = 3000;
 const FILE_MAX_FAILURES = 12;
 const FILE_OPERATION_BATCH_SIZE = 4;
-const FILE_COPY_JOB_POLL = 1000;
+const FILE_COPY_JOB_POLL_INTERVAL = 1000;
+const FILE_COPY_JOB_MAX_POLL_FAILURES = 3;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
@@ -115,7 +116,7 @@ _state.fs = {
 			return reject(await _state.fs.handleFetchResponse(response));
 		if (!response.headers.has('reservation-id'))
 			return reject('Unexpected server response');
-		id = response.headers.get('reservation-id');
+		const id = response.headers.get('reservation-id');
 		console.log(`Uploading file [${path}] with reservation [${id}]`);
 
 		/* try to perform the actual upload request using the given reservation */
@@ -123,7 +124,7 @@ _state.fs = {
 		request.open('POST', `${baseUrl}&reservation=${id}`, true);
 		request.upload.onprogress = (e) => {
 			if (!settled)
-				progress(e.loaded / file.size);
+				progress(file.size > 0 ? e.loaded / file.size : 1);
 		}
 		request.onload = () => {
 			if (settled) return; settled = true;
@@ -167,16 +168,17 @@ _state.fs = {
 			throw await _state.fs.handleFetchResponse(response);
 		if (!response.headers.has('job-id'))
 			throw 'Unexpected server response';
-		id = response.headers.get('job-id');
+		const id = response.headers.get('job-id');
 		console.log(`Copying file [${path}] to [${target}] as job [${id}]`);
 
 		/* query the job status */
 		await new Promise((resolve, reject) => {
+			let failures = 0;
 			const updateStatus = async () => {
 				try {
 					const response = await fetch(`${_state.encodePath(target)}?job=${id}`);
 					if (!response.ok)
-						return reject(_state.fs.handleFetchResponse(response));
+						return reject(await _state.fs.handleFetchResponse(response));
 					const body = await response.text();
 
 					/* check if the end has been reached */
@@ -185,13 +187,16 @@ _state.fs = {
 					const value = parseFloat(body);
 					if (isFinite(value) && value >= 0.0 && value <= 1.0)
 						progress(value);
+					failures = 0;
 				}
 				catch (_) {
-					return reject('Network error');
+					/* tolerate transient network errors between polls, as the job keeps running on the server */
+					if (++failures >= FILE_COPY_JOB_MAX_POLL_FAILURES)
+						return reject('Network error');
 				}
 
 				/* trigger the next job check */
-				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL);
+				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL_INTERVAL);
 			};
 
 			/* trigger the initial check */
@@ -840,16 +845,17 @@ _state.showMoveCopyPicker = (move, callback) => {
 	const updateView = (path) => {
 		const directories = fetched[path];
 
-		/* update the confirmation button */
-		if (move && path == _state.config.path)
+		/* update the confirmation button (clear the handler while disabled) */
+		const disabled = (move && path == _state.config.path);
+		if (disabled)
 			confirm.classList.add('disabled');
 		else
 			confirm.classList.remove('disabled');
-		confirm.onclick = () => {
+		confirm.onclick = (disabled ? null : () => {
 			if (settled) return;
 			_state.updateOverlay('pick-overlay', null);
 			callback(path);
-		};
+		});
 
 		/* construct the actual entries */
 		_state.updateMenuLength(content, directories.length);
@@ -1221,35 +1227,36 @@ _state.uploadContent = async (list, what) => {
 	let totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
 		entry.success = await _state.batch(async () => {
-			/* check if the entry has a parent and ensure it succeeded (mark the
-			*	object as skipped if the parent failed; not if already failed) */
+			let success = false;
+
+			/* check if the entry has a parent, which failed (mark the object as
+			*	skipped; not if the operation as a whole has already failed) */
 			if (entry.parent != null && !totalList[entry.parent].success) {
 				if (totalFailed <= FILE_MAX_FAILURES)
 					++totalSkipped;
-				return false;
 			}
 
-			/* check if the operation has already failed, in which case nothing
-			*	more will be performed (i.e. just silently skip the task) */
-			if (totalFailed > FILE_MAX_FAILURES)
-				return false;
+			/* perform the actual upload, unless the operation has already failed, in which
+			*	case nothing more will be performed (i.e. just silently skip the task) */
+			else if (totalFailed <= FILE_MAX_FAILURES) {
+				let result = null;
+				if (entry.kind == 'file')
+					result = await uploadFile(entry);
+				else
+					result = await uploadDirectory(entry.path);
 
-			/* try to perform the actual upload */
-			let result = null;
-			if (entry.kind == 'file')
-				result = await uploadFile(entry);
-			else
-				result = await uploadDirectory(entry.path);
-
-			/* update the overall task counter */
-			if (result == null) {
-				++totalSkipped;
-				return false;
+				/* apply the result to the overall counters (null implies a silently skipped task) */
+				if (result == null)
+					++totalSkipped;
+				else if (!result)
+					++totalFailed;
+				else
+					success = true;
 			}
-			if (!result)
-				++totalFailed;
+
+			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
 			totalUpdate({ additional: `${++totalPerformed}/${totalList.length}` });
-			return result;
+			return success;
 		});
 	}
 
@@ -1269,9 +1276,6 @@ _state.removeContent = async (entry) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
 	console.log(`Removing [${_state.fullPath(entry.name)}]...`);
-
-	/* mark the state as busy */
-	++_state.busy;
 
 	/* setup the notification */
 	const totalUpdate = _state.pushTaskProgress();
@@ -1328,35 +1332,29 @@ _state.removeContent = async (entry) => {
 	for (const entry of totalList) {
 		entry.success = await _state.batch(async () => {
 			totalUpdate({ detail: entry.path.substring(1) });
+			let success = false;
 
-			/* check if this is a directory, in which case all of its children need to have been removed */
-			if (entry.kind == 'directory') {
-				for (const index of entry.children) {
-					if (totalList[index].success)
-						continue;
+			/* check if this is a directory with children, which failed to be removed (mark the
+			*	object as skipped; not if the operation as a whole has already failed) */
+			if (entry.kind == 'directory' && entry.children.some((index) => !totalList[index].success)) {
+				if (totalFailed <= FILE_MAX_FAILURES)
+					++totalSkipped;
+			}
 
-					/* mark the directory as skipped, as the child failed (not if already failed) */
-					if (totalFailed <= FILE_MAX_FAILURES)
-						++totalSkipped;
-					return false;
+			/* perform the actual deletion, unless the operation has already failed, in which
+			*	case nothing more will be performed (i.e. just silently skip the task) */
+			else if (totalFailed <= FILE_MAX_FAILURES) {
+				try {
+					await _state.fs.remove(_state.fullPath(entry.path), entry.kind);
+					success = true;
+				}
+				catch (e) {
+					_state.pushTaskStatic(`Remove '${entry.path.substring(1)}'`, e, false);
+					++totalFailed;
 				}
 			}
 
-			/* check if the operation has already failed, in which case nothing
-			*	more will be performed (i.e. just silently skip the task) */
-			if (totalFailed > FILE_MAX_FAILURES)
-				return false;
-
-			/* try to perform the actual deletion */
-			let success = false;
-			try {
-				await _state.fs.remove(_state.fullPath(entry.path), entry.kind);
-				success = true;
-			}
-			catch (e) {
-				_state.pushTaskStatic(`Remove '${entry.path.substring(1)}'`, e, false);
-				++totalFailed;
-			}
+			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
 			totalUpdate({ additional: `${++totalPerformed}/${totalList.length}` });
 			return success;
 		});
@@ -1489,35 +1487,36 @@ _state.copyContent = async (entry, target, printTarget) => {
 	let totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
 		entry.success = await _state.batch(async () => {
-			/* check if the entry has a parent and ensure it succeeded (mark the
-			*	object as skipped if the parent failed; not if already failed) */
+			let success = false;
+
+			/* check if the entry has a parent, which failed (mark the object as
+			*	skipped; not if the operation as a whole has already failed) */
 			if (entry.parent != null && !totalList[entry.parent].success) {
 				if (totalFailed <= FILE_MAX_FAILURES)
 					++totalSkipped;
-				return false;
 			}
 
-			/* check if the operation has already failed, in which case nothing
-			*	more will be performed (i.e. just silently skip the task) */
-			if (totalFailed > FILE_MAX_FAILURES)
-				return false;
+			/* perform the actual copy, unless the operation has already failed, in which
+			*	case nothing more will be performed (i.e. just silently skip the task) */
+			else if (totalFailed <= FILE_MAX_FAILURES) {
+				let result = null;
+				if (entry.kind == 'file')
+					result = await copyFile(entry.size, entry.src, entry.dst);
+				else
+					result = await copyDirectory(entry.src, entry.dst);
 
-			/* try to perform the actual copy */
-			let result = null;
-			if (entry.kind == 'file')
-				result = await copyFile(entry.size, entry.src, entry.dst);
-			else
-				result = await copyDirectory(entry.src, entry.dst);
-
-			/* update the overall task counter */
-			if (result == null) {
-				++totalSkipped;
-				return false;
+				/* apply the result to the overall counters (null implies a silently skipped task) */
+				if (result == null)
+					++totalSkipped;
+				else if (!result)
+					++totalFailed;
+				else
+					success = true;
 			}
-			if (!result)
-				++totalFailed;
+
+			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
 			totalUpdate({ additional: `${++totalPerformed}/${totalList.length}` });
-			return result;
+			return success;
 		});
 	}
 
@@ -1572,7 +1571,7 @@ window.onload = () => {
 		let dropCountDepth = 0;
 
 		dropDetector.ondragenter = (e) => {
-			if (event.dataTransfer?.types?.includes('Files') !== true) return;
+			if (e.dataTransfer?.types?.includes('Files') !== true) return;
 			e.preventDefault();
 			if (dropCountDepth++ == 0)
 				dropZone.classList.add('expand');
@@ -1583,11 +1582,11 @@ window.onload = () => {
 				dropZone.classList.remove('expand');
 		};
 		dropDetector.ondragover = (e) => {
-			if (event.dataTransfer?.types?.includes('Files') !== true) return;
+			if (e.dataTransfer?.types?.includes('Files') !== true) return;
 			e.preventDefault();
 		}
 		dropDetector.ondrop = (e) => {
-			if (event.dataTransfer?.types?.includes('Files') !== true) return;
+			if (e.dataTransfer?.types?.includes('Files') !== true) return;
 			e.preventDefault();
 			dropCountDepth = 0;
 			dropZone.classList.remove('expand');
