@@ -29,6 +29,13 @@ interface DirListener {
 	stamp: number;
 	last: number;
 }
+interface CopyJobEntry {
+	progress: number;
+	message: string;
+	state: 'running' | 'failure' | 'success';
+	timer: NodeJS.Timeout | null;
+	abort: () => Promise<void>;
+}
 
 class Zipper {
 	/* system: custom/undefined; zip: 4.5 => 45 (zip64 extensions are the highest required feature) */
@@ -373,8 +380,11 @@ export const Endpoints = {
 	/** directory containting static assets (sparsely used) */
 	static: '/static',
 
-	/** directory for raw files and directory listings and views (GET, DELETE, POST) */
+	/** directory for raw files and directory listings and views (GET, DELETE, POST, PUT) */
 	files: '/files',
+
+	/** directory for copy jobs */
+	jobs: '/jobs',
 
 	/** directory for web-sockets for change listener */
 	sockets: '/ws'
@@ -389,6 +399,7 @@ export class FileShare extends mws.ModuleHandler {
 		timeout: NodeJS.Timeout | null;
 		entries: Record<string, { age: number, id: string }>;
 	};
+	private copyJobs: Record<string, CopyJobEntry>;
 
 	/** [dataPath] is the path to all of the directories and files to be served (must be the path to a directory) */
 	constructor(dataPath: string) {
@@ -399,6 +410,7 @@ export class FileShare extends mws.ModuleHandler {
 		this.fileAssets = mws.createPathSelf(import.meta.url, '../assets');
 		this.listener = {};
 		this.reservations = { timeout: null, entries: {} };
+		this.copyJobs = {};
 	}
 
 	private checkReservations(): void {
@@ -441,6 +453,7 @@ export class FileShare extends mws.ModuleHandler {
 		this.reservations.entries[filePath] = { id, age: Date.now() };
 		if (this.reservations.timeout == null)
 			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+		client.trace(`Reserved path [${filePath}] under id [${id}]`);
 
 		try {
 			/* check if the path already exists */
@@ -576,28 +589,30 @@ export class FileShare extends mws.ModuleHandler {
 		}
 	}
 	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
-		const move = client.url.searchParams.get('move') ?? null;
-		if (move == null)
+		const isCopy = client.url.searchParams.has('copy');
+		if (isCopy && client.url.searchParams.has('move'))
+			return client.respondBadRequest({ message: 'Copy and move are mutually exclusive operations' });
+		if (!isCopy && !client.url.searchParams.has('move'))
 			return client.respondBadRequest({ message: 'PUT requires operation target' });
 
 		/* validate the target path (query parameters are received decoded, hence only sanitize the path and validate its components) */
-		const target = mws.sanitize(move, false);
+		const target = mws.sanitize(client.url.searchParams.get(isCopy ? 'copy' : 'move')!, false);
 		if (target == '/')
-			return client.respondBadRequest({ message: 'Root cannot be a move target' });
+			return client.respondBadRequest({ message: `Root cannot be a ${isCopy ? 'copy' : 'move'} target` });
 		for (const name of target.substring(1).split('/')) {
 			if (!name.match(VALID_NAME_REGEX))
 				return client.respondBadRequest({ message: `Invalid path component [${name}]` });
 		}
 		const fileTarget = this.fileStorage(target);
 
-		/* validate the source kind */
+		/* validate the source kind (ignore any race conditions, if the path is modified up to the actual operation) */
 		try {
 			if (!await this.checkPathKind(client, filePath, kind))
 				return;
 		} catch (err: any) {
 			if (err.code == 'ENOENT')
 				return client.respondNotFound();
-			return client.respondInternalError(`Failed to move [${filePath}]: ${err.message}`);
+			return client.respondInternalError(`Failed to ${isCopy ? 'copy' : 'move'} [${filePath}]: ${err.message}`);
 		}
 
 		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
@@ -606,17 +621,40 @@ export class FileShare extends mws.ModuleHandler {
 		if (id == null)
 			return;
 
-		/* perform the actual move (ignore any race conditions, if the path is modified up to the move) and clear the reservation */
-		try {
-			await libFsPromises.rename(filePath, fileTarget);
-			client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
+		/* check if its a move operation and perform it */
+		if (!isCopy) {
+			try {
+				await libFsPromises.rename(filePath, fileTarget);
+				client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
+			}
+			catch (err: any) {
+				if (err.code == 'ENOENT')
+					client.respondNotFound();
+				else
+					client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
+			}
+
+			/* clear the destination reservation */
+			if (this.reservations.entries[fileTarget]?.id == id)
+				delete this.reservations.entries[fileTarget];
+			return;
 		}
-		catch (err: any) {
-			if (err.code == 'ENOENT')
-				client.respondNotFound();
-			else
-				client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
-		}
+
+		/* allocate the new job */
+		const job = libCrypto.randomUUID();
+		this.copyJobs[job] = {
+			abort: () => Promise.resolve(),
+			timer: null,
+			progress: 0,
+			message: 'I failed as a job',
+			state: 'failure'
+		};
+		client.trace(`Create copy job for [${filePath}] to [${fileTarget}] under id [${job}]`);
+		client.respondOk({ message: 'Copy job created', headers: { 'Job-Id': job } });
+
+		/* TODO: implement */
+
+		/* clear the destination reservation */
 		if (this.reservations.entries[fileTarget]?.id == id)
 			delete this.reservations.entries[fileTarget];
 	}
@@ -740,7 +778,7 @@ export class FileShare extends mws.ModuleHandler {
 
 				/* check if the directory should be served in raw */
 				if (client.url.searchParams.get('raw') == 'true')
-					return client.respond(JSON.stringify(list), { media: mws.Media.Json, status: mws.Status.Ok, headers: { 'Kind': 'directory' } });
+					return client.respondJson(list, { headers: { 'Kind': 'directory' } });
 
 				/* check if the directory is to be downloaded and otherwise create the directory view */
 				if (client.url.searchParams.get('download') == 'true') {
@@ -785,7 +823,9 @@ export class FileShare extends mws.ModuleHandler {
 			upload: true,
 			maxUploadSize: MAX_UPLOAD_SIZE,
 			path,
-			root: client.makePath(Endpoints.files),
+			files: client.makePath(Endpoints.files),
+			jobs: client.makePath(Endpoints.jobs),
+			sockets: client.makePath(Endpoints.sockets),
 			icons: {
 				back: this.staticPath(client, '/back-icon.svg'),
 				close: this.staticPath(client, '/close-icon.svg'),
@@ -822,7 +862,7 @@ export class FileShare extends mws.ModuleHandler {
 			],
 			body: b.Embed(body, true)
 		});
-		client.respondHtml(page, { status: mws.Status.Ok });
+		client.respondHtml(page);
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
 		/* check if the listener needs to be created */
@@ -992,6 +1032,15 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if its just static content to be served */
 		if (client.isInsideOf(Endpoints.static) && client.requireMethod('GET') != null)
 			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
+
+		/* check if its a request for a job and respond with its status */
+		if (client.isInsideOf(Endpoints.jobs) && client.requireMethod('GET') != null) {
+			const id = client.getChildPath(Endpoints.jobs).substring(1);
+			if (!(id in this.copyJobs))
+				return client.respondNotFound();
+			const job = this.copyJobs[id];
+			return client.respondJson({ progress: job.progress, state: job.state, message: job.message });
+		}
 	}
 	protected override async handleStop(): Promise<void> {
 		/* close all sockets and listener (no new sockets can arrive anymore once the stop-handler has started) */
@@ -1007,9 +1056,15 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		await Promise.all(promises);
 
-		/* reset any potential reservation-clear timers */
+		/* clear any potential reservation-clear timers */
 		if (this.reservations.timeout != null)
 			clearTimeout(this.reservations.timeout);
 		this.reservations = { timeout: null, entries: {} };
+
+		/* abort any potential copy jobs (automatically delete their own timers) */
+		const jobs: Promise<void>[] = [];
+		for (const id in this.copyJobs)
+			jobs.push(this.copyJobs[id].abort());
+		await Promise.all(jobs);
 	}
 }

@@ -176,18 +176,28 @@ _state.fs = {
 			let failures = 0;
 			const updateStatus = async () => {
 				try {
-					const response = await fetch(`${_state.encodePath(target)}?job=${id}`);
+					const response = await fetch(`${_state.config.jobs}/${id}`);
+					failures = 0;
+
 					if (!response.ok)
 						return reject(await _state.fs.handleFetchResponse(response));
-					const body = await response.text();
+					if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
+						return reject('Unexpected server response');
 
-					/* check if the end has been reached */
-					if (body == '')
-						return resolve();
-					const value = parseFloat(body);
-					if (isFinite(value) && value >= 0.0 && value <= 1.0)
-						progress(value);
-					failures = 0;
+					/* parse the json and return it */
+					try {
+						const body = await response.json();
+
+						/* update the progress */
+						if (body.state == 'running')
+							progress(body.progress);
+						else if (body.state == 'success')
+							return resolve();
+						return reject(body.message);
+					}
+					catch (_) {
+						return reject('Malformed server response');
+					}
 				}
 				catch (_) {
 					/* tolerate transient network errors between polls, as the job keeps running on the server */
@@ -199,7 +209,7 @@ _state.fs = {
 				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL_INTERVAL);
 			};
 
-			/* trigger the initial check */
+			/* trigger the initial check immediately */
 			updateStatus();
 		});
 	}
@@ -238,7 +248,7 @@ _state.fullPath = (...paths) => {
 	return buildPath(_state.config.path, ...paths);
 }
 _state.encodePath = (path) => {
-	let out = _state.config.root;
+	let out = _state.config.files;
 
 	for (let i = (path.startsWith('/') ? 1 : 0); i < path.length;) {
 		let end = path.indexOf('/', i);
@@ -1606,8 +1616,10 @@ window.onload = () => {
 	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
 	if (_state.config.maxUploadSize != null && _state.config.maxUploadSize <= 0)
 		_state.config.upload = false;
-	_state.config.path = (__LOAD_PARAMS__?.path ?? '/bad_path');
-	_state.config.root = (__LOAD_PARAMS__?.root ?? '/bad_path');
+	_state.config.path = (__LOAD_PARAMS__?.path ?? '/');
+	_state.config.files = (__LOAD_PARAMS__?.files ?? '/bad_path');
+	_state.config.jobs = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
+	_state.config.sockets = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the busy alert */
