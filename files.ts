@@ -9,8 +9,9 @@ import * as libZlib from "zlib";
 
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
-const WATCHER_GRACE_MS = 30 * 1000;
-const WATCHER_COALESCE_PERIOD_MS = 2000;
+const JOB_STATE_TIMEOUT_MS = 15_000;
+const WATCHER_GRACE_MS = 30_1000;
+const WATCHER_COALESCE_PERIOD_MS = 2_000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
 type FileKind = 'file' | 'directory';
@@ -33,7 +34,7 @@ interface CopyJobEntry {
 	progress: number;
 	message: string;
 	state: 'running' | 'failure' | 'success';
-	timer: NodeJS.Timeout | null;
+	age: number;
 	abort: () => Promise<void>;
 }
 
@@ -399,7 +400,10 @@ export class FileShare extends mws.ModuleHandler {
 		timeout: NodeJS.Timeout | null;
 		entries: Record<string, { age: number, id: string }>;
 	};
-	private copyJobs: Record<string, CopyJobEntry>;
+	private copyJobs: {
+		timeout: NodeJS.Timeout | null;
+		entries: Record<string, CopyJobEntry>;
+	}
 
 	/** [dataPath] is the path to all of the directories and files to be served (must be the path to a directory) */
 	constructor(dataPath: string) {
@@ -410,7 +414,7 @@ export class FileShare extends mws.ModuleHandler {
 		this.fileAssets = mws.createPathSelf(import.meta.url, '../assets');
 		this.listener = {};
 		this.reservations = { timeout: null, entries: {} };
-		this.copyJobs = {};
+		this.copyJobs = { timeout: null, entries: {} };
 	}
 
 	private checkReservations(): void {
@@ -428,6 +432,24 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if another cleanup needs to be scheduled */
 		if (remaining)
 			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+	}
+	private checkJobs(): void {
+		this.copyJobs.timeout = null;
+
+		/* remove all outdated resolved jobs (running jobs will start the cleanup timer themselves) */
+		let time = Date.now(), remaining = false;
+		for (const key in this.copyJobs.entries) {
+			if (this.copyJobs.entries[key].state == 'running')
+				continue;
+			if (time - this.copyJobs.entries[key].age > JOB_STATE_TIMEOUT_MS)
+				delete this.copyJobs.entries[key];
+			else
+				remaining = true;
+		}
+
+		/* check if another cleanup needs to be scheduled */
+		if (remaining)
+			this.copyJobs.timeout = setTimeout(() => this.checkJobs(), JOB_STATE_TIMEOUT_MS);
 	}
 	private checkOrUseReservation(client: mws.ClientRequest, filePath: string, reservation: string): boolean {
 		if (!(filePath in this.reservations.entries))
@@ -642,9 +664,9 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* allocate the new job */
 		const job = libCrypto.randomUUID();
-		this.copyJobs[job] = {
+		this.copyJobs.entries[job] = {
 			abort: () => Promise.resolve(),
-			timer: null,
+			age: 0,
 			progress: 0,
 			message: 'I failed as a job',
 			state: 'failure'
@@ -1036,9 +1058,9 @@ export class FileShare extends mws.ModuleHandler {
 		/* check if its a request for a job and respond with its status */
 		if (client.isInsideOf(Endpoints.jobs) && client.requireMethod('GET') != null) {
 			const id = client.getChildPath(Endpoints.jobs).substring(1);
-			if (!(id in this.copyJobs))
+			if (!(id in this.copyJobs.entries))
 				return client.respondNotFound();
-			const job = this.copyJobs[id];
+			const job = this.copyJobs.entries[id];
 			return client.respondJson({ progress: job.progress, state: job.state, message: job.message });
 		}
 	}
@@ -1054,17 +1076,16 @@ export class FileShare extends mws.ModuleHandler {
 				promises.push(ws.close());
 			}
 		}
+
+		/* abort any active jobs */
+		for (const id in this.copyJobs.entries)
+			promises.push(this.copyJobs.entries[id].abort());
 		await Promise.all(promises);
 
-		/* clear any potential reservation-clear timers */
+		/* clear any potential cleanup timers */
 		if (this.reservations.timeout != null)
 			clearTimeout(this.reservations.timeout);
-		this.reservations = { timeout: null, entries: {} };
-
-		/* abort any potential copy jobs (automatically delete their own timers) */
-		const jobs: Promise<void>[] = [];
-		for (const id in this.copyJobs)
-			jobs.push(this.copyJobs[id].abort());
-		await Promise.all(jobs);
+		if (this.copyJobs.timeout != null)
+			clearTimeout(this.copyJobs.timeout);
 	}
 }

@@ -189,11 +189,11 @@ _state.fs = {
 						const body = await response.json();
 
 						/* update the progress */
-						if (body.state == 'running')
-							progress(body.progress);
+						if (body.state == 'failure')
+							return reject(body.message);
 						else if (body.state == 'success')
 							return resolve();
-						return reject(body.message);
+						progress(body.progress);
 					}
 					catch (_) {
 						return reject('Malformed server response');
