@@ -579,7 +579,6 @@
 	padding: 6px;
 	border-radius: 4px;
 	display: flex;
-	align-items: center;
 	pointer-events: all;
 	overflow: hidden;
 }
@@ -591,12 +590,12 @@
 	display: flex;
 	justify-content: center;
 	align-items: center;
-	height: min-content;
 	margin: 4px;
 	margin-left: 0.75em;
 	padding: 2px;
 	width: 1.3em;
 	height: 1.3em;
+	align-self: start;
 }
 
 .notifications .entry>.body {
@@ -608,6 +607,7 @@
 	user-select: text;
 	font-size: 0.85em;
 	word-break: break-word;
+	align-self: center;
 }
 
 .task {
@@ -619,12 +619,7 @@
 }
 
 .task .text {
-	width: 100%;
 	text-align: end;
-}
-
-.task .text.hidden {
-	display: none;
 }
 
 .task .progress {
@@ -634,24 +629,21 @@
 	max-width: max-content;
 }
 
-.task .progress.hidden {
-	display: none;
-}
-
 .task .progress .digits {
 	min-width: 2.5em;
-	margin-left: 0.5em;
 	padding-right: 0.25em;
 	font-size: 0.9em;
 	text-align: end;
 }
 
 .task .progress .bar {
-	width: 120px;
-	height: 8px;
+	width: 90px;
+	height: 7px;
 	background: #d0d0d0;
-	border-radius: 4px;
+	border-radius: 3.5px;
 	overflow: hidden;
+	margin-left: 1em;
+	margin-right: 0.5em;
 }
 
 .task .progress .fill {
@@ -659,6 +651,37 @@
 	background: currentColor;
 	transition: width 200ms;
 	width: 0%;
+}
+
+.task .progress .fill.uncertain {
+	color: #c070e0;
+	border-radius: 3.5px;
+	animation: sweep 800ms linear infinite;
+	animation-delay: calc(800ms * -0.15);
+	position: relative;
+	width: 15%;
+	left: -15%;
+}
+
+@keyframes sweep {
+	15% {
+		left: 0%;
+	}
+
+	50% {
+		width: 40%;
+		left: 30%;
+	}
+
+	85% {
+		width: 15%;
+		left: 85%;
+	}
+
+	100% {
+		width: 15%;
+		left: 100%;
+	}
 }
 
 .status-base {
