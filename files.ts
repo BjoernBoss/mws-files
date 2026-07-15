@@ -417,39 +417,47 @@ export class FileShare extends mws.ModuleHandler {
 		this.copyJobs = { timeout: null, entries: {} };
 	}
 
-	private checkReservations(): void {
-		this.reservations.timeout = null;
+	private triggerCheckReservations(): void {
+		if (this.reservations.timeout != null)
+			return;
+		this.reservations.timeout = setTimeout(() => {
+			this.reservations.timeout = null;
 
-		/* remove all outdated reservations */
-		let time = Date.now(), remaining = false;
-		for (const key in this.reservations.entries) {
-			if (time - this.reservations.entries[key].age > MAX_RESERVATION_TIME_MS)
-				delete this.reservations.entries[key];
-			else
-				remaining = true;
-		}
+			/* remove all outdated reservations */
+			let time = Date.now(), remaining = false;
+			for (const key in this.reservations.entries) {
+				if (time - this.reservations.entries[key].age > MAX_RESERVATION_TIME_MS)
+					delete this.reservations.entries[key];
+				else
+					remaining = true;
+			}
 
-		/* check if another cleanup needs to be scheduled */
-		if (remaining)
-			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+			/* check if another cleanup needs to be scheduled */
+			if (remaining)
+				this.triggerCheckReservations();
+		}, MAX_RESERVATION_TIME_MS);
 	}
-	private checkJobs(): void {
-		this.copyJobs.timeout = null;
+	private triggerCheckJobs(): void {
+		if (this.copyJobs.timeout != null)
+			return;
+		this.copyJobs.timeout = setTimeout(() => {
+			this.copyJobs.timeout = null;
 
-		/* remove all outdated resolved jobs (running jobs will start the cleanup timer themselves) */
-		let time = Date.now(), remaining = false;
-		for (const key in this.copyJobs.entries) {
-			if (this.copyJobs.entries[key].state == 'running')
-				continue;
-			if (time - this.copyJobs.entries[key].age > JOB_STATE_TIMEOUT_MS)
-				delete this.copyJobs.entries[key];
-			else
-				remaining = true;
-		}
+			/* remove all outdated resolved jobs (running jobs will start the cleanup timer themselves) */
+			let time = Date.now(), remaining = false;
+			for (const key in this.copyJobs.entries) {
+				if (this.copyJobs.entries[key].state == 'running')
+					continue;
+				if (time - this.copyJobs.entries[key].age > JOB_STATE_TIMEOUT_MS)
+					delete this.copyJobs.entries[key];
+				else
+					remaining = true;
+			}
 
-		/* check if another cleanup needs to be scheduled */
-		if (remaining)
-			this.copyJobs.timeout = setTimeout(() => this.checkJobs(), JOB_STATE_TIMEOUT_MS);
+			/* check if another cleanup needs to be scheduled */
+			if (remaining)
+				this.triggerCheckJobs();
+		}, JOB_STATE_TIMEOUT_MS);
 	}
 	private checkOrUseReservation(client: mws.ClientRequest, filePath: string, reservation: string): boolean {
 		if (!(filePath in this.reservations.entries))
@@ -473,8 +481,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* already insert the new reservation (to ensure no race condition while applying) */
 		const id = libCrypto.randomUUID();
 		this.reservations.entries[filePath] = { id, age: Date.now() };
-		if (this.reservations.timeout == null)
-			this.reservations.timeout = setTimeout(() => this.checkReservations(), MAX_RESERVATION_TIME_MS);
+		this.triggerCheckReservations();
 		client.trace(`Reserved path [${filePath}] under id [${id}]`);
 
 		try {
@@ -589,9 +596,8 @@ export class FileShare extends mws.ModuleHandler {
 				return client.respondOk({ message: `Directory created` });
 			}
 
-			/* try to upload the file */
-			if (!await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true }))
-				return client.respondConflict({ message: `Path already exists` });
+			/* try to upload the file (automatically enforces upload-size constraint) */
+			await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
@@ -609,6 +615,92 @@ export class FileShare extends mws.ModuleHandler {
 			}
 			return client.respondConflict({ message: `Path already exists` });
 		}
+	}
+	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, kind: FileKind, reservation: string): Promise<void> {
+		/* validate the kind */
+		if (kind != 'file')
+			return client.respondBadRequest({ message: `${kind[0].toUpperCase()}${kind.substring(1)} cannot be copied` });
+
+		let stream: mws.SizedReadable | null = null;
+		let success = ((): boolean => {
+			try {
+				/* open the source file for reading */
+				stream = this.cache.stream(filePath, { checkFreshness: true, eager: true });
+				if (stream == null) {
+					client.respondNotFound();
+					return false;
+				}
+
+				/* validate the size constraints (must destroy the stream) */
+				if (stream.fileSize > MAX_UPLOAD_SIZE) {
+					client.respondBadRequest({ message: 'File is too large to be copied' });
+					return false;
+				}
+			} catch (err: any) {
+				client.respondInternalError(`Failed to copy [${filePath}] to [${fileTarget}]: ${err.message}`);
+				return false;
+			}
+
+			/* allocate the new job of uncertain running state */
+			const job = libCrypto.randomUUID();
+			const entry: CopyJobEntry = this.copyJobs.entries[job] = {
+				abort: async () => {
+					abort = true;
+					await completed;
+					if (job in this.copyJobs.entries)
+						delete this.copyJobs.entries[job];
+				},
+				age: 0,
+				progress: 0,
+				message: '',
+				state: 'running'
+			};
+			let resolver = () => { };
+			let completed: Promise<void> = new Promise((res) => resolver = res), abort = false;
+
+			/* TODO: attach transform stream to cyphon progress and detect 'aborts') */
+
+			/* start writing the file (detach the execution as the job may take longer) */
+			this.cache.write(fileTarget, stream, { create: true })
+				.then(() => {
+					this.log(`Copy job [${job}] completed`);
+
+					/* mark the job as completed */
+					entry.progress = 1.0;
+					entry.state = 'success';
+					entry.age = Date.now();
+					this.triggerCheckJobs();
+					resolver();
+				})
+				.catch((err: any) => {
+					if (this.reservations.entries[fileTarget]?.id == reservation)
+						delete this.reservations.entries[fileTarget];
+					this.error(`Error in copy job [${job}]: ${err.message}`);
+
+					/* mark the job as decided */
+					entry.state = 'failure';
+					entry.age = Date.now();
+					this.triggerCheckJobs();
+					resolver();
+					if (err.code == 'EEXIST')
+						entry.message = 'Path already exists';
+					else
+						entry.message = 'Internal Server Error';
+				});
+
+			/* return the newly created job-id */
+			this.log(`Create copy job for [${filePath}] to [${fileTarget}] under id [${job}]`);
+			client.respondOk({ message: 'Copy job created', headers: { 'Job-Id': job } });
+			return true;
+		})();
+
+		/* perform any necessary cleanup (will already have been responded) */
+		if (success)
+			return;
+		if (this.reservations.entries[fileTarget]?.id == reservation)
+			delete this.reservations.entries[fileTarget];
+		if (stream != null)
+			stream.destroy();
 	}
 	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
 		const isCopy = client.url.searchParams.has('copy');
@@ -638,47 +730,30 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
-		const reservation = client.url.searchParams.get('reservation') ?? '';
-		const id = await this.tryReservePath(client, fileTarget, mws.splitFileName(target)[0], reservation);
-		if (id == null)
+		const reservation = await this.tryReservePath(client, fileTarget, mws.splitFileName(target)[0], (client.url.searchParams.get('reservation') ?? ''));
+		if (reservation == null)
 			return;
 
-		/* check if its a move operation and perform it */
-		if (!isCopy) {
-			try {
-				await libFsPromises.rename(filePath, fileTarget);
-				client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
-			}
-			catch (err: any) {
-				if (err.code == 'ENOENT')
-					client.respondNotFound();
-				else
-					client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
-			}
+		/* check if its a copy operation and perform it */
+		if (isCopy)
+			return this.handleCopy(client, filePath, fileTarget, kind, reservation);
 
-			/* clear the destination reservation */
-			if (this.reservations.entries[fileTarget]?.id == id)
-				delete this.reservations.entries[fileTarget];
-			return;
+		/* perform the move operation */
+		try {
+			await libFsPromises.rename(filePath, fileTarget);
+			client.respondOk({ message: `${kind[0].toUpperCase()}${kind.substring(1)} successfully moved` });
+		}
+		catch (err: any) {
+			if (err.code == 'ENOENT')
+				client.respondNotFound();
+			else
+				client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
 		}
 
-		/* allocate the new job */
-		const job = libCrypto.randomUUID();
-		this.copyJobs.entries[job] = {
-			abort: () => Promise.resolve(),
-			age: 0,
-			progress: 0,
-			message: 'I failed as a job',
-			state: 'failure'
-		};
-		client.trace(`Create copy job for [${filePath}] to [${fileTarget}] under id [${job}]`);
-		client.respondOk({ message: 'Copy job created', headers: { 'Job-Id': job } });
-
-		/* TODO: implement */
-
 		/* clear the destination reservation */
-		if (this.reservations.entries[fileTarget]?.id == id)
+		if (this.reservations.entries[fileTarget]?.id == reservation)
 			delete this.reservations.entries[fileTarget];
+		return;
 	}
 	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
 		/* try to remove the object */
