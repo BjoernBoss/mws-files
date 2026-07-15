@@ -6,7 +6,9 @@ const TRANSITION_OVERLAY_ANIMATION = 30;
 const FADE_NOTIFICATION_ANIMATION = 3000;
 const FILE_MAX_FAILURES = 12;
 const FILE_OPERATION_BATCH_SIZE = 3;
+const FILE_COPY_JOB_FIRST_POLL = 50;
 const FILE_COPY_JOB_POLL_INTERVAL = 1000;
+const FILE_COPY_JOB_PROGRESS_STEPS = 15;
 const FILE_COPY_JOB_MAX_POLL_FAILURES = 3;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
@@ -173,44 +175,61 @@ _state.fs = {
 
 		/* query the job status */
 		await new Promise((resolve, reject) => {
-			let failures = 0;
+			let failures = 0, jobStart = Date.now(), jobLastPoll = null, jobLastProgress = 0, lastUpdate = 0;
 			const updateStatus = async () => {
-				try {
-					const response = await fetch(`${_state.config.jobs}/${id}`);
-					failures = 0;
-
-					if (!response.ok)
-						return reject(await _state.fs.handleFetchResponse(response));
-					if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
-						return reject('Unexpected server response');
-
-					/* parse the json and return it */
-					try {
-						const body = await response.json();
-
-						/* update the progress */
-						if (body.state == 'failure')
-							return reject(body.message);
-						else if (body.state == 'success')
-							return resolve();
-						progress(body.progress);
-					}
-					catch (_) {
-						return reject('Malformed server response');
-					}
-				}
+				let response = null, body = null;
+				try { response = await fetch(buildPath(_state.config.jobs, id)); }
 				catch (_) {
-					/* tolerate transient network errors between polls, as the job keeps running on the server */
+					/* tolerate transient network errors between polls, as the job
+					*	keeps running on the server, and trigger the next check */
 					if (++failures >= FILE_COPY_JOB_MAX_POLL_FAILURES)
 						return reject('Network error');
+					return setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL_INTERVAL);
+				}
+				failures = 0;
+
+				/* validate the json body result and parse it */
+				if (!response.ok)
+					return reject(await _state.fs.handleFetchResponse(response));
+				if (response.headers.has('content-type') && !response.headers.get('content-type').startsWith('application/json'))
+					return reject('Unexpected server response');
+				try { body = await response.json(); }
+				catch (_) {
+					return reject('Malformed server response');
 				}
 
-				/* trigger the next job check */
-				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL_INTERVAL);
+				/* update the progress */
+				if (body.state == 'failure')
+					return reject(body.message);
+				else if (body.state == 'success')
+					return resolve();
+
+				/* on the initial update, apply the progress, and then update it speculative based on the
+				*	average of (totalProg / totalTime) and (lastProg / lastTime) up to the next poll */
+				if (jobLastPoll == null)
+					progress(lastUpdate = body.progress);
+				const lastPoll = jobLastPoll ?? jobStart, lastProgress = jobLastProgress;
+				jobLastPoll = Date.now(), jobLastProgress = Math.max(body.progress, jobLastProgress);
+				const totalProgPerMS = (jobLastProgress / Math.max(1, jobLastPoll - jobStart));
+				const lastProgPerMS = ((jobLastProgress - lastProgress) / Math.max(1, jobLastPoll - lastPoll));
+				const forecast = Math.min(1.0, jobLastProgress + ((totalProgPerMS + lastProgPerMS) / 2) * FILE_COPY_JOB_POLL_INTERVAL);
+				const progressStep = (forecast - lastUpdate) / FILE_COPY_JOB_PROGRESS_STEPS;
+
+				/* wait for one intervall/N and then perform the next N steps by advancing the
+				*	progress very intervall/N steps, and immediately fetch after the last update */
+				const nextStep = (index) => {
+					if (index > 0)
+						progress(lastUpdate += progressStep);
+					if (index < FILE_COPY_JOB_PROGRESS_STEPS)
+						return setTimeout(() => nextStep(index + 1), FILE_COPY_JOB_POLL_INTERVAL / FILE_COPY_JOB_PROGRESS_STEPS);
+					updateStatus();
+				};
+				nextStep(0);
 			};
 
-			/* trigger the initial check immediately */
-			updateStatus();
+			/* trigger the initial job check (after a given wait time to
+			*	give small copies the chance to resolve immediately) */
+			setTimeout(() => updateStatus(), FILE_COPY_JOB_FIRST_POLL);
 		});
 	}
 }
@@ -391,8 +410,8 @@ _state.pushMessage = () => {
 	const caption = { text: '', additional: '' };
 	return (kind) => {
 		/* check if the notification should be hidden */
-		if (kind == null)
-			return fadeOut();
+		if (kind == null || typeof kind == 'boolean')
+			return fadeOut(kind);
 
 		/* check if a new text should be pushed */
 		if (kind == 'text') {
@@ -1305,6 +1324,10 @@ _state.uploadContent = async (list, what) => {
 		message('status')('Successfully uploaded!', true);
 		message();
 	}
+
+	/* check if all entries failed, in which case the host message does not have any benefit of existing */
+	if (totalFailed == totalList.length)
+		message(true);
 }
 _state.removeContent = async (entry) => {
 	if (!_state.config.delete)
@@ -1431,6 +1454,10 @@ _state.removeContent = async (entry) => {
 		message('status')('Successfully removed!', true);
 		message();
 	}
+
+	/* check if all entries failed, in which case the host message does not have any benefit of existing */
+	if (totalFailed == totalList.length)
+		message(true);
 }
 _state.copyContent = async (entry, target, printTarget) => {
 	if (!_state.config.upload)
@@ -1607,6 +1634,10 @@ _state.copyContent = async (entry, target, printTarget) => {
 		message('status')('Successfully copied!', true);
 		message();
 	}
+
+	/* check if all entries failed, in which case the host message does not have any benefit of existing */
+	if (totalFailed == totalList.length)
+		message(true);
 }
 
 window.onload = () => {

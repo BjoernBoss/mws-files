@@ -640,6 +640,8 @@ export class FileShare extends mws.ModuleHandler {
 				client.respondInternalError(`Failed to copy [${filePath}] to [${fileTarget}]: ${err.message}`);
 				return false;
 			}
+			let resolver = () => { }, abort = false;
+			const completed: Promise<void> = new Promise((res) => resolver = res);
 
 			/* allocate the new job of uncertain running state */
 			const job = libCrypto.randomUUID();
@@ -655,13 +657,23 @@ export class FileShare extends mws.ModuleHandler {
 				message: '',
 				state: 'running'
 			};
-			let resolver = () => { };
-			let completed: Promise<void> = new Promise((res) => resolver = res), abort = false;
 
-			/* TODO: attach transform stream to cyphon progress and detect 'aborts') */
+			/* setup the intermediate transformer to update the progress and handle potential aborts
+			*	(ignore pipeline errors, as the cache.write will already return them properly) */
+			let processed = 0;
+			const transform = new libStream.Transform({
+				transform: (chunk, _, cb) => {
+					if (abort)
+						return cb(new Error('Copy aborted'), null);
+					processed += chunk.byteLength;
+					entry.progress = (stream!.fileSize > 0 ? (processed / stream!.fileSize) : 1);
+					cb(null, chunk);
+				}
+			});
+			libStream.pipeline(stream, transform, () => { });
 
 			/* start writing the file (detach the execution as the job may take longer) */
-			this.cache.write(fileTarget, stream, { create: true })
+			this.cache.write(fileTarget, transform, { create: true })
 				.then(() => {
 					this.log(`Copy job [${job}] completed`);
 
