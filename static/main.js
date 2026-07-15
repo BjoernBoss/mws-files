@@ -407,7 +407,7 @@ _state.pushMessage = () => {
 
 	/* create the actual notification and return the handler callback */
 	const fadeOut = _state.pushRawNotification(upload);
-	const caption = { text: '', additional: '' };
+	const barTimeStarts = [];
 	return (kind) => {
 		/* check if the notification should be hidden */
 		if (kind == null || typeof kind == 'boolean')
@@ -448,9 +448,26 @@ _state.pushMessage = () => {
 			const fill = bar.appendChild(buildElement({ class: 'fill uncertain' }));
 			const digits = element.appendChild(buildElement({ class: 'digits', text: '--%' }));
 
+			/* to ensure overlayed bars, which repeatedly end up at the same position dont constantly restart their animation time, use
+			*	the last start time at the given index as base time for the animation, hence just picking the uncertain animation back up */
+			let startTime = Date.now();
+			if (barTimeStarts.length >= upload.children.length && barTimeStarts[upload.children.length - 1] != null) {
+				fill.style.animationDelay = `-${startTime - barTimeStarts[upload.children.length - 1]}ms`;
+				startTime = barTimeStarts[upload.children.length - 1];
+			}
+
 			return (value, progress) => {
-				if (value == null && progress == null)
+				if (value == null && progress == null) {
+					let index = 0;
+					while (upload.children[index] != element)
+						++index;
+
+					/* write back the current animation delay start time */
+					while (barTimeStarts.length <= index)
+						barTimeStarts.push(null);
+					barTimeStarts[index] = startTime;
 					return element.remove();
+				}
 
 				if (value != null)
 					text.innerText = value;
