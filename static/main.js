@@ -73,11 +73,12 @@ _state.fs = {
 			throw 'Malformed server response';
 		}
 	},
-	makeDirectory: async (path, silent) => {
+	makeDirectory: async (path, silent, mtime) => {
 		let response = null;
 
 		/* try to create the new directory */
-		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silent=${silent ? 'true' : 'false'}`, { method: 'POST' }); }
+		const query = (mtime == null ? '' : `&mtime=${mtime}`);
+		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silent=${silent ? 'true' : 'false'}${query}`, { method: 'POST' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -108,7 +109,7 @@ _state.fs = {
 
 		/* try to reserve the given path (to test if its valid/available, before writing data to it) */
 		let response = null, settled = false;
-		try { response = await fetch(`${baseUrl}&reserve=true`, { method: 'POST' }); }
+		try { response = await fetch(`${baseUrl}&reserve=true&mtime=${file.lastModified}`, { method: 'POST' }); }
 		catch (_) {
 			return reject('Network error');
 		}
@@ -175,8 +176,13 @@ _state.fs = {
 
 		/* query the job status */
 		await new Promise((resolve, reject) => {
-			let failures = 0, jobStart = Date.now(), jobLastPoll = null, jobLastProgress = 0, lastUpdate = 0;
+			let failures = 0, jobStart = Date.now(), jobLastPoll = null, jobLastProgress = 0, lastUpdate = 0, stepTimer = null;
 			const updateStatus = async () => {
+				/* cancel any pending speculative step to prevent it from overlapping with the poll result */
+				if (stepTimer != null)
+					clearTimeout(stepTimer);
+				stepTimer = null;
+
 				let response = null, body = null;
 				try { response = await fetch(buildPath(_state.config.jobs, id)); }
 				catch (_) {
@@ -212,17 +218,20 @@ _state.fs = {
 				jobLastPoll = Date.now(), jobLastProgress = Math.max(body.progress, jobLastProgress);
 				const totalProgPerMS = (jobLastProgress / Math.max(1, jobLastPoll - jobStart));
 				const lastProgPerMS = ((jobLastProgress - lastProgress) / Math.max(1, jobLastPoll - lastPoll));
-				const forecast = Math.min(1.0, jobLastProgress + ((totalProgPerMS + lastProgPerMS) / 2) * FILE_COPY_JOB_POLL_INTERVAL);
-				const progressStep = (forecast - lastUpdate) / FILE_COPY_JOB_PROGRESS_STEPS;
+				const forecast = Math.min(1.0, Math.max(lastUpdate, jobLastProgress + ((totalProgPerMS + lastProgPerMS) / 2) * FILE_COPY_JOB_POLL_INTERVAL));
 
-				/* wait for one intervall/N and then perform the next N steps by advancing the
-				*	progress very intervall/N steps, and immediately fetch after the last update */
+				/* schedule the next poll independently of the speculative steps, to ensure throttled
+				*	timers (such as in background tabs) do not stretch the actual poll interval */
+				setTimeout(() => updateStatus(), FILE_COPY_JOB_POLL_INTERVAL);
+
+				/* advance the progress towards the forecast every interval/N (the
+				*	next poll will cancel any potentially still pending step) */
+				const progressStep = (forecast - lastUpdate) / FILE_COPY_JOB_PROGRESS_STEPS;
 				const nextStep = (index) => {
 					if (index > 0)
 						progress(lastUpdate += progressStep);
 					if (index < FILE_COPY_JOB_PROGRESS_STEPS)
-						return setTimeout(() => nextStep(index + 1), FILE_COPY_JOB_POLL_INTERVAL / FILE_COPY_JOB_PROGRESS_STEPS);
-					updateStatus();
+						stepTimer = setTimeout(() => nextStep(index + 1), FILE_COPY_JOB_POLL_INTERVAL / FILE_COPY_JOB_PROGRESS_STEPS);
 				};
 				nextStep(0);
 			};
@@ -458,9 +467,12 @@ _state.pushMessage = () => {
 
 			return (value, progress) => {
 				if (value == null && progress == null) {
+					/* lookup the entries slot in the current message body and check if it has already been dropped */
 					let index = 0;
-					while (upload.children[index] != element)
+					while (index < upload.children.length && upload.children[index] != element)
 						++index;
+					if (index >= upload.children.length)
+						return;
 
 					/* write back the current animation delay start time */
 					while (barTimeStarts.length <= index)
@@ -1156,7 +1168,7 @@ _state.createDirectory = (element, path, callback) => {
 			const update = message('status');
 			update('Creating...');
 
-			_state.batch(() => _state.fs.makeDirectory(fullPath, false))
+			_state.batch(() => _state.fs.makeDirectory(fullPath, false, null))
 				.then(() => {
 					update('Directory created!', true);
 					message();
@@ -1255,7 +1267,7 @@ _state.uploadContent = async (list, what) => {
 			/* add the entry preemtively to the list (ensure that a new list is created) */
 			const name = file.path.substring(file.path.lastIndexOf('/') + 1);
 			if (file.path.length == name.length + 1)
-				_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: Date.now() }]));
+				_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: file.file.lastModified }]));
 		}
 		catch (e) {
 			_state.pushStaticTask(`Upload '${file.path.substring(1)}'`, e, false);
@@ -1271,7 +1283,7 @@ _state.uploadContent = async (list, what) => {
 		/* try to create the new directory */
 		let success = false;
 		try {
-			await _state.fs.makeDirectory(_state.fullPath(path), true);
+			await _state.fs.makeDirectory(_state.fullPath(path), true, null);
 			success = true;
 
 			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
@@ -1541,7 +1553,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 	caption(null, `0/${totalList.length}`);
 
 	/* helper functions to perform copying */
-	const copyFile = async (fileSize, src, dst) => {
+	const copyFile = async (fileSize, src, dst, modified) => {
 		const update = message('progress');
 		update(src.substring(1));
 
@@ -1562,10 +1574,11 @@ _state.copyContent = async (entry, target, printTarget) => {
 			});
 			success = true;
 
-			/* add the entry preemtively to the list (ensure that a new list is created) */
+			/* add the entry preemtively to the list (ensure that a new list is created; the
+			*	copy preserves the modified-time of the source) */
 			const name = dst.substring(dst.lastIndexOf('/') + 1);
 			if (dst == _state.fullPath(name))
-				_state.updateList(_state.list.concat([{ name, kind: 'file', size: fileSize, modified: Date.now() }]));
+				_state.updateList(_state.list.concat([{ name, kind: 'file', size: fileSize, modified }]));
 		}
 		catch (e) {
 			_state.pushStaticTask(`Copy '${src.substring(1)}'`, e, false);
@@ -1574,20 +1587,20 @@ _state.copyContent = async (entry, target, printTarget) => {
 		update();
 		return success;
 	};
-	const copyDirectory = async (src, dst) => {
+	const copyDirectory = async (src, dst, modified) => {
 		const update = message('status');
 		update(src.substring(1));
 
 		/* try to create/copy the new directory (not silent, must succeed) */
 		let success = false;
 		try {
-			await _state.fs.makeDirectory(dst, false);
+			await _state.fs.makeDirectory(dst, false, modified);
 			success = true;
 
 			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
 			const name = dst.substring(dst.lastIndexOf('/') + 1);
 			if (dst == _state.fullPath(name))
-				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: Date.now() }]));
+				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified }]));
 		}
 		catch (e) {
 			_state.pushStaticTask(`Copy '${src.substring(1)}'`, e, false);
@@ -1618,9 +1631,9 @@ _state.copyContent = async (entry, target, printTarget) => {
 			else {
 				let result = null;
 				if (entry.kind == 'file')
-					result = await copyFile(entry.size, entry.src, entry.dst);
+					result = await copyFile(entry.size, entry.src, entry.dst, entry.modified);
 				else
-					result = await copyDirectory(entry.src, entry.dst);
+					result = await copyDirectory(entry.src, entry.dst, entry.modified);
 
 				/* apply the result to the overall counters (null implies a silently skipped task) */
 				if (result == null)
@@ -1667,7 +1680,7 @@ window.onload = () => {
 	_state.config.path = (__LOAD_PARAMS__?.path ?? '/');
 	_state.config.files = (__LOAD_PARAMS__?.files ?? '/bad_path');
 	_state.config.jobs = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
-	_state.config.sockets = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
+	_state.config.sockets = (__LOAD_PARAMS__?.sockets ?? '/bad_path');
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the busy alert */
