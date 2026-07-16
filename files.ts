@@ -38,6 +38,7 @@ interface CopyJobEntry {
 	abort: () => Promise<void>;
 }
 interface BurntParams {
+	access: boolean;
 	upload: boolean;
 	delete: boolean;
 	uploadMTime: boolean;
@@ -382,6 +383,9 @@ class Zipper {
  *	corresponding abilities (otherwise results in 403), or how the module should behave.
  */
 export interface Params {
+	/** connection is allowed to access content (default: false) */
+	access?: boolean;
+
 	/** connection is allowed to upload content (default: false) */
 	upload?: boolean;
 
@@ -406,13 +410,14 @@ export const Endpoints = {
 	/** directory containing static assets (sparsely used) */
 	static: '/static',
 
-	/** directory for raw files and directory listings and views (GET; POST/PUT require Params.upload; DELETE and moving require Params.delete) */
+	/** directory for raw files and directory listings and views (GET; POST/PUT require
+	 *	Params.upload; DELETE and moving require Params.delete; all require Params.access) */
 	files: '/files',
 
-	/** directory for copy jobs (GET) */
+	/** directory for copy jobs (GET; requires Params.access) */
 	jobs: '/jobs',
 
-	/** directory for web-sockets for change listener */
+	/** directory for web-sockets for change listener (requires Params.access) */
 	sockets: '/ws'
 }
 
@@ -448,6 +453,7 @@ export class FileShare extends mws.ModuleHandler {
 		this.reservations = { timeout: null, entries: {} };
 		this.copyJobs = { timeout: null, entries: {} };
 		this.defaultParams = {
+			access: params?.access ?? false,
 			upload: params?.upload ?? false,
 			delete: params?.delete ?? false,
 			maxUpload: params?.maxUpload ?? DEFAULT_MAX_UPLOAD_SIZE,
@@ -847,12 +853,12 @@ export class FileShare extends mws.ModuleHandler {
 			client.respondInternalError(`Failed to remove ${kind} [${filePath}]: ${err.message}`);
 		}
 	}
-	private async handleDownload(client: mws.ClientRequest, name: string, filePath: string, list: Record<string, DirEntry>): Promise<void> {
+	private async handleDownload(client: mws.ClientRequest, filePath: string, headers: Record<string, string>, list: Record<string, DirEntry>): Promise<void> {
 		client.log(`Zipping directory [${filePath}]`);
 
 		/* prepare writing the directory content to a zip file and create the zipper (automatically handles errors and
 		*	closes connection) or immediately respond, if its only a head request and no content needs to be produced */
-		const writer = client.respondData({ media: mws.Media.Zip, headers: { 'Kind': 'directory', 'Content-Disposition': `attachment; filename="${name}.zip"` } });
+		const writer = client.respondData({ media: mws.Media.Zip, headers });
 		if (client.isHead) {
 			writer.once('error', () => { });
 			return new Promise<void>((resolve) => writer.end(() => resolve()));
@@ -923,7 +929,7 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* try to serve it as a file (root cannot be served as a file) */
 		if ((kind == null || kind == 'file') && path != '/') {
-			const headers: Record<string, string> = { 'Kind': 'file' };
+			const headers: Record<string, string> = { 'Kind': 'file', 'Path': path };
 
 			/* check if its supposed to be a download */
 			if (client.url.searchParams.get('download') == 'true')
@@ -937,17 +943,20 @@ export class FileShare extends mws.ModuleHandler {
 		/* try to serve it as a directory */
 		if (kind == null || kind == 'directory') {
 			try {
+				const headers: Record<string, string> = { 'Kind': 'file', 'Path': path };
+
 				/* try to read the directory state */
 				const list = await this.fetchDirectoryList(filePath);
 
 				/* check if the directory should be served in raw */
 				if (client.url.searchParams.get('raw') == 'true')
-					return client.respondJson(list, { headers: { 'Kind': 'directory' } });
+					return client.respondJson(list, { headers });
 
 				/* check if the directory is to be downloaded and otherwise create the directory view */
 				if (client.url.searchParams.get('download') == 'true') {
 					const [_, name] = mws.splitFileName(path);
-					return this.handleDownload(client, (name == '' ? 'directory' : name), filePath, list);
+					headers['Content-Disposition'] = `attachment; filename="${name == '' ? 'directory' : name}.zip"`;
+					return this.handleDownload(client, filePath, headers, list);
 				}
 				return this.buildView(client, path, list, params);
 			} catch (err: any) {
@@ -1169,15 +1178,18 @@ export class FileShare extends mws.ModuleHandler {
 	}
 	protected override async handleRequest(client: mws.ClientRequest, raw?: mws.Params): Promise<void> {
 		const params: BurntParams = {
+			access: (typeof raw?.access == 'boolean' ? raw : this.defaultParams).access,
 			upload: (typeof raw?.upload == 'boolean' ? raw : this.defaultParams).upload,
 			delete: (typeof raw?.delete == 'boolean' ? raw : this.defaultParams).delete,
 			uploadMTime: (typeof raw?.uploadMTime == 'boolean' ? raw : this.defaultParams).uploadMTime,
 			maxUpload: (typeof raw?.maxUpload == 'number' && isFinite(raw.maxUpload) ? raw : this.defaultParams).maxUpload
 		};
-		client.trace(`Files handler for [${client.path}] (U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
+		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
 
 		/* check if its a request for the files API (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.files)) {
+			if (!params.access)
+				return client.respondForbidden({ reason: 'Not allowed to access content' });
 			const path = this.decodePath(client, client.getChildPath(Endpoints.files));
 			if (path == null)
 				return;
@@ -1186,6 +1198,8 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if its one of the listener (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.sockets)) {
+			if (!params.access)
+				return client.respondForbidden({ reason: 'Not allowed to access content' });
 			const path = this.decodePath(client, client.getChildPath(Endpoints.sockets));
 			if (path == null)
 				return;
@@ -1204,6 +1218,9 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if its a request for a job and respond with its status */
 		if (client.isInsideOf(Endpoints.jobs) && client.requireMethod('GET') != null) {
+			if (!params.access)
+				return client.respondForbidden({ reason: 'Not allowed to access content' });
+
 			const id = client.getChildPath(Endpoints.jobs).substring(1);
 			if (!(id in this.copyJobs.entries))
 				return client.respondNotFound();
