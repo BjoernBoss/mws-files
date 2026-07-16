@@ -8,7 +8,7 @@ import * as libStream from "stream";
 import * as libZlib from "zlib";
 
 const DEFAULT_MAX_UPLOAD_SIZE = 100_000_000;
-const MAX_RESERVATION_TIME_MS = 2_000;
+const MAX_RESERVATION_TIME_MS = 5_000;
 const JOB_STATE_TIMEOUT_MS = 180_000;
 const WATCHER_GRACE_MS = 30_000;
 const WATCHER_COALESCE_PERIOD_MS = 2_000;
@@ -403,13 +403,13 @@ export interface Params {
  *	All paths in json format are not encoded.
  */
 export const Endpoints = {
-	/** directory containting static assets (sparsely used) */
+	/** directory containing static assets (sparsely used) */
 	static: '/static',
 
-	/** directory for raw files and directory listings and views (GET, DELETE, POST, PUT) */
+	/** directory for raw files and directory listings and views (GET; POST/PUT require Params.upload; DELETE and moving require Params.delete) */
 	files: '/files',
 
-	/** directory for copy jobs */
+	/** directory for copy jobs (GET) */
 	jobs: '/jobs',
 
 	/** directory for web-sockets for change listener */
@@ -1172,7 +1172,7 @@ export class FileShare extends mws.ModuleHandler {
 			upload: (typeof raw?.upload == 'boolean' ? raw : this.defaultParams).upload,
 			delete: (typeof raw?.delete == 'boolean' ? raw : this.defaultParams).delete,
 			uploadMTime: (typeof raw?.uploadMTime == 'boolean' ? raw : this.defaultParams).uploadMTime,
-			maxUpload: (typeof raw?.maxUpload == 'number' ? raw : this.defaultParams).maxUpload
+			maxUpload: (typeof raw?.maxUpload == 'number' && isFinite(raw.maxUpload) ? raw : this.defaultParams).maxUpload
 		};
 		client.trace(`Files handler for [${client.path}] (U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
 
