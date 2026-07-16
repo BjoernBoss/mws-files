@@ -9,8 +9,8 @@ import * as libZlib from "zlib";
 
 const MAX_UPLOAD_SIZE = 10_000_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
-const JOB_STATE_TIMEOUT_MS = 15_000;
-const WATCHER_GRACE_MS = 30_1000;
+const JOB_STATE_TIMEOUT_MS = 180_000;
+const WATCHER_GRACE_MS = 30_000;
 const WATCHER_COALESCE_PERIOD_MS = 2_000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 
@@ -578,6 +578,7 @@ export class FileShare extends mws.ModuleHandler {
 	}
 	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parent: string): Promise<void> {
 		const reservation = client.url.searchParams.get('reservation') ?? '';
+		const mtime = parseInt(client.url.searchParams.get('mtime') ?? '');
 
 		try {
 			/* check if the path is to be reserved or is already reserved (all bad paths are already responded) */
@@ -593,11 +594,17 @@ export class FileShare extends mws.ModuleHandler {
 			/* check if a directory is to be created */
 			if (kind == 'directory') {
 				await libFsPromises.mkdir(filePath, { recursive: false });
+
+				/* try to update the mtime, but ignore any errors */
+				if (!isNaN(mtime)) {
+					try { await libFsPromises.utimes(filePath, mtime / 1000, mtime / 1000); }
+					catch (err: any) { client.error(`Failed updating mtime of [${filePath}]: ${err.message}`) };
+				}
 				return client.respondOk({ message: `Directory created` });
 			}
 
 			/* try to upload the file (automatically enforces upload-size constraint) */
-			await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true });
+			await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true, mtime: (isNaN(mtime) ? undefined : mtime) });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
@@ -616,12 +623,8 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondConflict({ message: `Path already exists` });
 		}
 	}
-	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, kind: FileKind, reservation: string): Promise<void> {
-		/* validate the kind */
-		if (kind != 'file')
-			return client.respondBadRequest({ message: `${kind[0].toUpperCase()}${kind.substring(1)} cannot be copied` });
-
-		let stream: mws.SizedReadable | null = null;
+	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, reservation: string): Promise<void> {
+		let stream: mws.FileReadable | null = null;
 		let success = ((): boolean => {
 			try {
 				/* open the source file for reading */
@@ -640,14 +643,16 @@ export class FileShare extends mws.ModuleHandler {
 				client.respondInternalError(`Failed to copy [${filePath}] to [${fileTarget}]: ${err.message}`);
 				return false;
 			}
-			let resolver = () => { }, abort = false;
+			let resolver = () => { };
 			const completed: Promise<void> = new Promise((res) => resolver = res);
 
-			/* allocate the new job of uncertain running state */
+			/* allocate the new job of uncertain running state (abort by destroying the transformer,
+			*	the erroring write will resolve the completed promise and clean the target up) */
 			const job = libCrypto.randomUUID();
 			const entry: CopyJobEntry = this.copyJobs.entries[job] = {
 				abort: async () => {
-					abort = true;
+					if (entry.state == 'running')
+						transform.destroy(new Error('Copy aborted'));
 					await completed;
 					if (job in this.copyJobs.entries)
 						delete this.copyJobs.entries[job];
@@ -658,22 +663,20 @@ export class FileShare extends mws.ModuleHandler {
 				state: 'running'
 			};
 
-			/* setup the intermediate transformer to update the progress and handle potential aborts
-			*	(ignore pipeline errors, as the cache.write will already return them properly) */
+			/* setup the intermediate transformer to update the progress (ignore pipeline
+			*	errors, as the cache.write will already return them properly) */
 			let processed = 0;
 			const transform = new libStream.Transform({
 				transform: (chunk, _, cb) => {
-					if (abort)
-						return cb(new Error('Copy aborted'), null);
 					processed += chunk.byteLength;
-					entry.progress = (stream!.fileSize > 0 ? (processed / stream!.fileSize) : 1);
+					entry.progress = (stream!.fileSize > 0 ? Math.min(1, processed / stream!.fileSize) : 1);
 					cb(null, chunk);
 				}
 			});
 			libStream.pipeline(stream, transform, () => { });
 
-			/* start writing the file (detach the execution as the job may take longer) */
-			this.cache.write(fileTarget, transform, { create: true })
+			/* start writing the file while preserving the source modified-time (detach the execution as the job may take longer) */
+			this.cache.write(fileTarget, transform, { create: true, mtime: stream.timeModified })
 				.then(() => {
 					this.log(`Copy job [${job}] completed`);
 
@@ -720,6 +723,8 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondBadRequest({ message: 'Copy and move are mutually exclusive operations' });
 		if (!isCopy && !client.url.searchParams.has('move'))
 			return client.respondBadRequest({ message: 'PUT requires operation target' });
+		if (isCopy && kind != 'file')
+			return client.respondBadRequest({ message: `${kind[0].toUpperCase()}${kind.substring(1)} cannot be copied` });
 
 		/* validate the target path (query parameters are received decoded, hence only sanitize the path and validate its components) */
 		const target = mws.sanitize(client.url.searchParams.get(isCopy ? 'copy' : 'move')!, false);
@@ -748,7 +753,7 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if its a copy operation and perform it */
 		if (isCopy)
-			return this.handleCopy(client, filePath, fileTarget, kind, reservation);
+			return this.handleCopy(client, filePath, fileTarget, reservation);
 
 		/* perform the move operation */
 		try {
