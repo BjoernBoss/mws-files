@@ -7,7 +7,7 @@ import * as libFsPromises from "fs/promises";
 import * as libStream from "stream";
 import * as libZlib from "zlib";
 
-const MAX_UPLOAD_SIZE = 10_000_000_000;
+const DEFAULT_MAX_UPLOAD_SIZE = 100_000_000;
 const MAX_RESERVATION_TIME_MS = 2_000;
 const JOB_STATE_TIMEOUT_MS = 180_000;
 const WATCHER_GRACE_MS = 30_000;
@@ -36,6 +36,12 @@ interface CopyJobEntry {
 	state: 'running' | 'failure' | 'success';
 	age: number;
 	abort: () => Promise<void>;
+}
+interface BurntParams {
+	upload: boolean;
+	delete: boolean;
+	uploadMTime: boolean;
+	maxUpload: number;
 }
 
 class Zipper {
@@ -371,6 +377,25 @@ class Zipper {
 }
 
 /**
+ *	Parameter are created by merging the handler-params as Params with the default parameter.
+ *	The properties decide whether or not a given client has access to the
+ *	corresponding abilities (otherwise results in 403), or how the module should behave.
+ */
+export interface Params {
+	/** connection is allowed to upload content (default: false) */
+	upload?: boolean;
+
+	/** connection is allowed to delete content (default: false) */
+	delete?: boolean;
+
+	/** preserve the mtime of uploaded content, otherwise reset to current time (default: false) */
+	uploadMTime?: boolean;
+
+	/** largest content to copy or upload (0 implies no limit; default: 100MB) */
+	maxUpload?: number;
+}
+
+/**
  *	Endpoints used by the module.
  *	This mapping can be used to translate components of the module to different paths in the URL space.
  *
@@ -391,6 +416,9 @@ export const Endpoints = {
 	sockets: '/ws'
 }
 
+/**
+ *	The FileShare caches path reservations and copy jobs internally, no two shares should be mapped to the same directory at the same time.
+ */
 export class FileShare extends mws.ModuleHandler {
 	private fileStorage: (path: string) => string;
 	private fileStatic: (path: string) => string;
@@ -404,9 +432,13 @@ export class FileShare extends mws.ModuleHandler {
 		timeout: NodeJS.Timeout | null;
 		entries: Record<string, CopyJobEntry>;
 	}
+	private defaultParams: BurntParams;
 
-	/** [dataPath] is the path to all of the directories and files to be served (must be the path to a directory) */
-	constructor(dataPath: string) {
+	/**
+	 *	[dataPath] path to all of the directories and files to be served (must be the path to a directory).
+	 *	[params] describes the default parameter.
+	 */
+	constructor(dataPath: string, params?: Params) {
 		super('files');
 
 		this.fileStorage = mws.createPathLocation(dataPath);
@@ -415,6 +447,12 @@ export class FileShare extends mws.ModuleHandler {
 		this.listener = {};
 		this.reservations = { timeout: null, entries: {} };
 		this.copyJobs = { timeout: null, entries: {} };
+		this.defaultParams = {
+			upload: params?.upload ?? false,
+			delete: params?.delete ?? false,
+			maxUpload: params?.maxUpload ?? DEFAULT_MAX_UPLOAD_SIZE,
+			uploadMTime: params?.uploadMTime ?? false
+		};
 	}
 
 	private triggerCheckReservations(): void {
@@ -576,9 +614,12 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		return out;
 	}
-	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parent: string): Promise<void> {
+	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parent: string, params: BurntParams): Promise<void> {
+		if (!params.upload)
+			return client.respondForbidden({ reason: 'Not allowed to upload content' });
+
 		const reservation = client.url.searchParams.get('reservation') ?? '';
-		const mtime = parseInt(client.url.searchParams.get('mtime') ?? '');
+		const mtime = (params.uploadMTime ? parseInt(client.url.searchParams.get('mtime') ?? '') : NaN);
 
 		try {
 			/* check if the path is to be reserved or is already reserved (all bad paths are already responded) */
@@ -595,7 +636,7 @@ export class FileShare extends mws.ModuleHandler {
 			if (kind == 'directory') {
 				await libFsPromises.mkdir(filePath, { recursive: false });
 
-				/* try to update the mtime, but ignore any errors */
+				/* try to update the mtime, but dont fail on any errors */
 				if (!isNaN(mtime)) {
 					try { await libFsPromises.utimes(filePath, mtime / 1000, mtime / 1000); }
 					catch (err: any) { client.error(`Failed updating mtime of [${filePath}]: ${err.message}`) };
@@ -604,7 +645,7 @@ export class FileShare extends mws.ModuleHandler {
 			}
 
 			/* try to upload the file (automatically enforces upload-size constraint) */
-			await this.cache.write(filePath, client.receiveData(MAX_UPLOAD_SIZE), { create: true, mtime: (isNaN(mtime) ? undefined : mtime) });
+			await this.cache.write(filePath, client.receiveData(params.maxUpload == 0 ? null : params.maxUpload), { create: true, mtime: (isNaN(mtime) ? undefined : mtime) });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
@@ -623,7 +664,7 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondConflict({ message: `Path already exists` });
 		}
 	}
-	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, reservation: string): Promise<void> {
+	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, reservation: string, params: BurntParams): Promise<void> {
 		let stream: mws.FileReadable | null = null;
 		let success = ((): boolean => {
 			try {
@@ -635,8 +676,8 @@ export class FileShare extends mws.ModuleHandler {
 				}
 
 				/* validate the size constraints (must destroy the stream) */
-				if (stream.fileSize > MAX_UPLOAD_SIZE) {
-					client.respondBadRequest({ message: 'File is too large to be copied' });
+				if (params.maxUpload != 0 && stream.fileSize > params.maxUpload) {
+					client.respondConflict({ message: 'File is too large to be copied' });
 					return false;
 				}
 			} catch (err: any) {
@@ -717,12 +758,18 @@ export class FileShare extends mws.ModuleHandler {
 		if (stream != null)
 			stream.destroy();
 	}
-	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
+	private async handleCopyMove(client: mws.ClientRequest, filePath: string, kind: FileKind, params: BurntParams): Promise<void> {
+		if (!params.upload)
+			return client.respondForbidden({ reason: 'Not allowed to upload content' });
+
 		const isCopy = client.url.searchParams.has('copy');
 		if (isCopy && client.url.searchParams.has('move'))
 			return client.respondBadRequest({ message: 'Copy and move are mutually exclusive operations' });
 		if (!isCopy && !client.url.searchParams.has('move'))
 			return client.respondBadRequest({ message: 'PUT requires operation target' });
+
+		if (!isCopy && !params.delete)
+			return client.respondForbidden({ reason: 'Not allowed to delete content' });
 		if (isCopy && kind != 'file')
 			return client.respondBadRequest({ message: `${kind[0].toUpperCase()}${kind.substring(1)} cannot be copied` });
 
@@ -753,7 +800,7 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if its a copy operation and perform it */
 		if (isCopy)
-			return this.handleCopy(client, filePath, fileTarget, reservation);
+			return this.handleCopy(client, filePath, fileTarget, reservation, params);
 
 		/* perform the move operation */
 		try {
@@ -772,7 +819,10 @@ export class FileShare extends mws.ModuleHandler {
 			delete this.reservations.entries[fileTarget];
 		return;
 	}
-	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<void> {
+	private async handleDelete(client: mws.ClientRequest, filePath: string, kind: FileKind, params: BurntParams): Promise<void> {
+		if (!params.delete)
+			return client.respondForbidden({ reason: 'Not allowed to delete content' });
+
 		/* try to remove the object */
 		try {
 			if (kind == 'directory')
@@ -846,7 +896,7 @@ export class FileShare extends mws.ModuleHandler {
 			writer.destroy(err);
 		}
 	}
-	private async handleFiles(client: mws.ClientRequest, path: string): Promise<void> {
+	private async handleFiles(client: mws.ClientRequest, path: string, params: BurntParams): Promise<void> {
 		const filePath = this.fileStorage(path);
 
 		/* ensure the request is using a supported method */
@@ -865,11 +915,11 @@ export class FileShare extends mws.ModuleHandler {
 
 		/* check if the entry is to be deleted or uploaded or moved */
 		if (method == 'POST')
-			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFileName(path)[0]);
+			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFileName(path)[0], params);
 		if (method == 'PUT')
-			return this.handleCopyMove(client, filePath, (kind ?? 'file'));
+			return this.handleCopyMove(client, filePath, (kind ?? 'file'), params);
 		if (method == 'DELETE')
-			return this.handleDelete(client, filePath, (kind ?? 'file'));
+			return this.handleDelete(client, filePath, (kind ?? 'file'), params);
 
 		/* try to serve it as a file (root cannot be served as a file) */
 		if ((kind == null || kind == 'file') && path != '/') {
@@ -899,7 +949,7 @@ export class FileShare extends mws.ModuleHandler {
 					const [_, name] = mws.splitFileName(path);
 					return this.handleDownload(client, (name == '' ? 'directory' : name), filePath, list);
 				}
-				return this.buildView(client, path, list);
+				return this.buildView(client, path, list, params);
 			} catch (err: any) {
 				if (err.code == 'ENOENT')
 					return client.respondNotFound();
@@ -918,7 +968,7 @@ export class FileShare extends mws.ModuleHandler {
 	private staticPath(client: mws.ClientRequest, path: string): string {
 		return client.makePath(this.cache.immutable(this.name, mws.joinSanitized(Endpoints.static, path)));
 	}
-	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>): Promise<void> {
+	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>, params: BurntParams): Promise<void> {
 		/* fetch the content of the main view */
 		const fullPath = this.fileAssets('/page.html');
 		let body: string | null = null;
@@ -933,9 +983,9 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		const loadParams: string = JSON.stringify({
-			delete: true,
-			upload: true,
-			maxUploadSize: MAX_UPLOAD_SIZE,
+			delete: params.delete,
+			upload: params.upload,
+			maxUploadSize: params.maxUpload,
 			path,
 			files: client.makePath(Endpoints.files),
 			jobs: client.makePath(Endpoints.jobs),
@@ -961,8 +1011,7 @@ export class FileShare extends mws.ModuleHandler {
 		});
 		const title = mws.splitFileName(path)[1];
 
-		/* add the required page headers and load the content from cache (prevent
-		*	user-zooming as this breaks viewport handling for keyboard-detection) */
+		/* add the required page headers and load the content from cache */
 		const b = mws.build;
 		const page = new b.HtmlPage({
 			language: 'en',
@@ -1118,8 +1167,22 @@ export class FileShare extends mws.ModuleHandler {
 				entry.grace = setTimeout(() => entry.close(), WATCHER_GRACE_MS);
 		});
 	}
-	protected override async handleRequest(client: mws.ClientRequest): Promise<void> {
-		client.trace(`Files handler for [${client.path}]`);
+	protected override async handleRequest(client: mws.ClientRequest, raw?: mws.Params): Promise<void> {
+		const params: BurntParams = {
+			upload: (typeof raw?.upload == 'boolean' ? raw : this.defaultParams).upload,
+			delete: (typeof raw?.delete == 'boolean' ? raw : this.defaultParams).delete,
+			uploadMTime: (typeof raw?.uploadMTime == 'boolean' ? raw : this.defaultParams).uploadMTime,
+			maxUpload: (typeof raw?.maxUpload == 'number' ? raw : this.defaultParams).maxUpload
+		};
+		client.trace(`Files handler for [${client.path}] (U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
+
+		/* check if its a request for the files API (allow root itself for reading it) */
+		if (client.isSubPathOf(Endpoints.files)) {
+			const path = this.decodePath(client, client.getChildPath(Endpoints.files));
+			if (path == null)
+				return;
+			return this.handleFiles(client, path, params);
+		}
 
 		/* check if its one of the listener (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.sockets)) {
@@ -1133,14 +1196,6 @@ export class FileShare extends mws.ModuleHandler {
 			if (ws != null)
 				this.acceptWebSocket(ws, path);
 			return;
-		}
-
-		/* check if its a request for the files API (allow root itself for reading it) */
-		if (client.isSubPathOf(Endpoints.files)) {
-			const path = this.decodePath(client, client.getChildPath(Endpoints.files));
-			if (path == null)
-				return;
-			return this.handleFiles(client, path);
 		}
 
 		/* check if its just static content to be served */

@@ -774,7 +774,7 @@ _state.showCreateMenu = () => {
 	content.children[2].children[1].replaceChildren(row1);
 
 	/* add the size marker */
-	if (_state.config.maxUploadSize != null) {
+	if (_state.config.maxUploadSize != 0) {
 		const text = `Max. ${_state.formatSize(_state.config.maxUploadSize)} per file`;
 		row0.appendChild(buildElement({ class: 'detail', text }));
 		row1.appendChild(buildElement({ class: 'detail', text }));
@@ -1247,11 +1247,11 @@ _state.uploadContent = async (list, what) => {
 		const update = message('progress');
 		update(file.path.substring(1));
 
-		/* check if the file is too large (does not contribute to the total-failed counter) */
-		if (_state.config.maxUploadSize != null && file.size > _state.config.maxUploadSize) {
+		/* check if the file is too large */
+		if (_state.config.maxUploadSize != 0 && file.size > _state.config.maxUploadSize) {
 			_state.pushStaticTask(`Upload '${file.path.substring(1)}'`, `Skipping too large file (${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
 			update();
-			return null;
+			return false;
 		}
 
 		/* try to perform the actual upload */
@@ -1318,16 +1318,14 @@ _state.uploadContent = async (list, what) => {
 			else if (totalFailed > FILE_MAX_FAILURES)
 				return false;
 			else {
-				let result = null;
+				let result = false;
 				if (entry.kind == 'file')
 					result = await uploadFile(entry);
 				else
 					result = await uploadDirectory(entry.path);
 
-				/* apply the result to the overall counters (null implies a silently skipped task) */
-				if (result == null)
-					++totalSkipped;
-				else if (!result)
+				/* apply the result to the overall counters */
+				if (!result)
 					++totalFailed;
 				else
 					success = true;
@@ -1557,11 +1555,11 @@ _state.copyContent = async (entry, target, printTarget) => {
 		const update = message('progress');
 		update(src.substring(1));
 
-		/* check if the file is too large (does not contribute to the total-failed counter) */
-		if (_state.config.maxUploadSize != null && fileSize > _state.config.maxUploadSize) {
+		/* check if the file is too large */
+		if (_state.config.maxUploadSize != 0 && fileSize > _state.config.maxUploadSize) {
 			_state.pushStaticTask(`Copy '${src.substring(1)}'`, `Skipping too large file (${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
 			update();
-			return null;
+			return false;
 		}
 
 		/* try to perform the actual copy */
@@ -1629,16 +1627,14 @@ _state.copyContent = async (entry, target, printTarget) => {
 			else if (totalFailed > FILE_MAX_FAILURES)
 				return false;
 			else {
-				let result = null;
+				let result = false;
 				if (entry.kind == 'file')
 					result = await copyFile(entry.size, entry.src, entry.dst, entry.modified);
 				else
 					result = await copyDirectory(entry.src, entry.dst, entry.modified);
 
-				/* apply the result to the overall counters (null implies a silently skipped task) */
-				if (result == null)
-					++totalSkipped;
-				else if (!result)
+				/* apply the result to the overall counters */
+				if (!result)
 					++totalFailed;
 				else
 					success = true;
@@ -1674,9 +1670,7 @@ window.onload = () => {
 	/* parse the initial configuration */
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
 	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
-	_state.config.maxUploadSize = (_state.config.upload ? (__LOAD_PARAMS__?.maxUploadSize ?? null) : 0);
-	if (_state.config.maxUploadSize != null && _state.config.maxUploadSize <= 0)
-		_state.config.upload = false;
+	_state.config.maxUploadSize = (__LOAD_PARAMS__?.maxUploadSize ?? 0);
 	_state.config.path = (__LOAD_PARAMS__?.path ?? '/');
 	_state.config.files = (__LOAD_PARAMS__?.files ?? '/bad_path');
 	_state.config.jobs = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
@@ -1794,7 +1788,7 @@ window.onload = () => {
 
 		/* update the drop animations and add the size constraints */
 		dropZone.style.setProperty('--drop-zone-animations', `${DROP_ZONE_ANIMATION}ms`);
-		if (_state.config.maxUploadSize != null)
+		if (_state.config.maxUploadSize != 0)
 			document.getElementById('drop-detail').innerText = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
 
 		/* show and wire up the create button */
