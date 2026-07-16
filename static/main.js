@@ -109,7 +109,7 @@ _state.fs = {
 
 		/* try to reserve the given path (to test if its valid/available, before writing data to it) */
 		let response = null, settled = false;
-		try { response = await fetch(`${baseUrl}&reserve=true&mtime=${file.lastModified}`, { method: 'POST' }); }
+		try { response = await fetch(`${baseUrl}&reserve=true`, { method: 'POST' }); }
 		catch (_) {
 			return reject('Network error');
 		}
@@ -124,7 +124,7 @@ _state.fs = {
 
 		/* try to perform the actual upload request using the given reservation */
 		const request = new XMLHttpRequest();
-		request.open('POST', `${baseUrl}&reservation=${id}`, true);
+		request.open('POST', `${baseUrl}&reservation=${id}&mtime=${file.lastModified}`, true);
 		request.upload.onprogress = (e) => {
 			if (!settled)
 				progress(file.size > 0 ? e.loaded / file.size : 1);
