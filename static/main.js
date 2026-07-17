@@ -276,17 +276,7 @@ _state.fullPath = (...paths) => {
 	return buildPath(_state.config.path, ...paths);
 }
 _state.encodePath = (path) => {
-	let out = _state.config.files;
-
-	for (let i = (path.startsWith('/') ? 1 : 0); i < path.length;) {
-		let end = path.indexOf('/', i);
-		if (end < 0)
-			end = path.length;
-
-		out = buildPath(out, encodeURIComponent(path.substring(i, end)));
-		i = end + 1;
-	}
-	return out;
+	return buildPath(_state.config.files, path).split('/').map((val) => encodeURIComponent(val)).join('/');
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {

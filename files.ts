@@ -13,6 +13,7 @@ const JOB_STATE_TIMEOUT_MS = 180_000;
 const WATCHER_GRACE_MS = 30_000;
 const WATCHER_COALESCE_PERIOD_MS = 2_000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
+const NON_ASCII_REGEX = /[^\x20-\x7e]/;
 
 type FileKind = 'file' | 'directory';
 interface DirEntry {
@@ -43,6 +44,21 @@ interface BurntParams {
 	delete: boolean;
 	uploadMTime: boolean;
 	maxUpload: number;
+	rebase: string;
+}
+
+function makeContentDisposition(name: string): string {
+	/* extract the default ascii-name */
+	let [_, filename, extension] = mws.splitFileExtension(name);
+	if (NON_ASCII_REGEX.test(filename))
+		filename = 'download';
+	if (!NON_ASCII_REGEX.test(extension))
+		filename += extension;
+	filename = filename.replace(/(["\\])/g, '\\$1');
+
+	/* [content-disposition] requires more than just the normal percent-encoding */
+	const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+	return `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`;
 }
 
 class Zipper {
@@ -397,13 +413,16 @@ export interface Params {
 
 	/** largest content to copy or upload (0 implies no limit; default: 100MB) */
 	maxUpload?: number;
+
+	/** rebase the connections root to a sub-directory, thereby limiting all of its moves (must be a directory; default: '/') */
+	rebase?: string;
 }
 
 /**
  *	Endpoints used by the module.
  *	This mapping can be used to translate components of the module to different paths in the URL space.
  *
- *	All paths in the url use URI encoding for the components, while preserving '/'.
+ *	All paths in the url or http header use URI encoding for the components, while preserving '/'.
  *	All paths in json format are not encoded.
  */
 export const Endpoints = {
@@ -457,7 +476,8 @@ export class FileShare extends mws.ModuleHandler {
 			upload: params?.upload ?? false,
 			delete: params?.delete ?? false,
 			maxUpload: params?.maxUpload ?? DEFAULT_MAX_UPLOAD_SIZE,
-			uploadMTime: params?.uploadMTime ?? false
+			uploadMTime: params?.uploadMTime ?? false,
+			rebase: mws.sanitize(params?.rebase ?? '/', false)
 		};
 	}
 
@@ -517,7 +537,7 @@ export class FileShare extends mws.ModuleHandler {
 		delete this.reservations.entries[filePath];
 		return true;
 	}
-	private async tryReservePath(client: mws.ClientRequest, filePath: string, parent: string, reservation: string): Promise<string | null> {
+	private async tryReservePath(client: mws.ClientRequest, filePath: string, parentIsRoot: boolean, reservation: string): Promise<string | null> {
 		/* check if the path is already reserved */
 		if (!this.checkOrUseReservation(client, filePath, reservation))
 			return null;
@@ -546,9 +566,12 @@ export class FileShare extends mws.ModuleHandler {
 
 			/* check if the parent directory exists */
 			let parentExists = false;
-			try { parentExists = (await libFsPromises.stat(this.fileStorage(parent))).isDirectory(); } catch (_) { }
+			try { parentExists = (await libFsPromises.stat(mws.joinNative(filePath, '..'))).isDirectory(); } catch (_) { }
 			if (!parentExists) {
-				client.respondBadRequest({ message: 'Parent does not exist' });
+				if (parentIsRoot)
+					client.respondInternalError('Root does not exist');
+				else
+					client.respondBadRequest({ message: 'Parent does not exist' });
 				delete this.reservations.entries[filePath];
 				return null;
 			}
@@ -569,6 +592,9 @@ export class FileShare extends mws.ModuleHandler {
 			return false;
 		}
 		return true;
+	}
+	private encodePath(path: string): string {
+		return path.split('/').map((val) => encodeURIComponent(val)).join('/');
 	}
 	private decodePath(client: mws.ClientRequest, path: string): string | null {
 		if (path == '/')
@@ -620,7 +646,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 		return out;
 	}
-	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parent: string, params: BurntParams): Promise<void> {
+	private async handleUpload(client: mws.ClientRequest, filePath: string, kind: FileKind, parentIsRoot: boolean, params: BurntParams): Promise<void> {
 		if (!params.upload)
 			return client.respondForbidden({ reason: 'Not allowed to upload content' });
 
@@ -630,7 +656,7 @@ export class FileShare extends mws.ModuleHandler {
 		try {
 			/* check if the path is to be reserved or is already reserved (all bad paths are already responded) */
 			if (client.url.searchParams.get('reserve') == 'true') {
-				const id = await this.tryReservePath(client, filePath, parent, reservation);
+				const id = await this.tryReservePath(client, filePath, parentIsRoot, reservation);
 				if (id != null)
 					client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
 				return;
@@ -787,7 +813,7 @@ export class FileShare extends mws.ModuleHandler {
 			if (!name.match(VALID_NAME_REGEX))
 				return client.respondBadRequest({ message: `Invalid path component [${name}]` });
 		}
-		const fileTarget = this.fileStorage(target);
+		const fileTarget = this.fileStorage(mws.joinSanitized(params.rebase, target));
 
 		/* validate the source kind (ignore any race conditions, if the path is modified up to the actual operation) */
 		try {
@@ -800,7 +826,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
-		const reservation = await this.tryReservePath(client, fileTarget, mws.splitFileName(target)[0], (client.url.searchParams.get('reservation') ?? ''));
+		const reservation = await this.tryReservePath(client, fileTarget, (mws.splitFileName(target)[0] == '/'), (client.url.searchParams.get('reservation') ?? ''));
 		if (reservation == null)
 			return;
 
@@ -903,37 +929,41 @@ export class FileShare extends mws.ModuleHandler {
 		}
 	}
 	private async handleFiles(client: mws.ClientRequest, path: string, params: BurntParams): Promise<void> {
-		const filePath = this.fileStorage(path);
+		const filePath = this.fileStorage(mws.joinSanitized(params.rebase, path));
 
 		/* ensure the request is using a supported method */
 		const method = client.requireMethod(['GET', 'POST', 'PUT', 'DELETE']);
 		if (method == null)
 			return;
 
-		/* check if the method is allowed for the given endpoint */
-		if (path == '/' && method != 'GET')
-			return client.respondForbidden({ message: 'Root cannot be modified' });
-
 		/* validate the request kind */
 		const kind = client.url.searchParams.get('kind');
 		if (kind != null && kind != 'file' && kind != 'directory')
 			return client.respondBadRequest({ message: `Unsupported kind [${kind}] encountered` });
 
+		/* check if the method is allowed for the given endpoint (rebased-root cannot be modified) */
+		if (path == '/') {
+			if (method != 'GET')
+				return client.respondForbidden({ message: 'Root cannot be modified' });
+			if (kind == 'file')
+				return client.respondBadRequest({ message: 'Root is a directory' });
+		}
+
 		/* check if the entry is to be deleted or uploaded or moved */
 		if (method == 'POST')
-			return this.handleUpload(client, filePath, (kind ?? 'file'), mws.splitFileName(path)[0], params);
+			return this.handleUpload(client, filePath, (kind ?? 'file'), (mws.splitFileName(path)[0] == '/'), params);
 		if (method == 'PUT')
 			return this.handleCopyMove(client, filePath, (kind ?? 'file'), params);
 		if (method == 'DELETE')
 			return this.handleDelete(client, filePath, (kind ?? 'file'), params);
 
-		/* try to serve it as a file (root cannot be served as a file) */
-		if ((kind == null || kind == 'file') && path != '/') {
-			const headers: Record<string, string> = { 'Kind': 'file', 'Path': path };
+		/* try to serve it as a file (rebased-root cannot be served as a file) */
+		if (kind == null || kind == 'file') {
+			const headers: Record<string, string> = { 'Kind': 'file', 'Path': this.encodePath(path) };
 
 			/* check if its supposed to be a download */
 			if (client.url.searchParams.get('download') == 'true')
-				headers['Content-Disposition'] = `attachment; filename="${mws.splitFileName(path)[1]}"`;
+				headers['Content-Disposition'] = makeContentDisposition(mws.splitFileName(path)[1]);
 
 			/* try to perform the actual serving (check freshness at all times, as the file might be changed) */
 			if (await client.tryRespondFile(filePath, { checkFreshness: true, headers }))
@@ -943,10 +973,16 @@ export class FileShare extends mws.ModuleHandler {
 		/* try to serve it as a directory */
 		if (kind == null || kind == 'directory') {
 			try {
-				const headers: Record<string, string> = { 'Kind': 'file', 'Path': path };
+				const headers: Record<string, string> = { 'Kind': 'directory', 'Path': this.encodePath(path) };
 
-				/* try to read the directory state */
-				const list = await this.fetchDirectoryList(filePath);
+				/* try to read the directory state (for the root, pretend the directory is empty, if it does not exist) */
+				let list: Record<string, DirEntry> = {};
+				try { list = await this.fetchDirectoryList(filePath); }
+				catch (err: any) {
+					if (err.code != 'ENOENT' || path != '/')
+						throw err;
+					this.warning(`Root [${filePath}] does not exist`);
+				}
 
 				/* check if the directory should be served in raw */
 				if (client.url.searchParams.get('raw') == 'true')
@@ -955,7 +991,7 @@ export class FileShare extends mws.ModuleHandler {
 				/* check if the directory is to be downloaded and otherwise create the directory view */
 				if (client.url.searchParams.get('download') == 'true') {
 					const [_, name] = mws.splitFileName(path);
-					headers['Content-Disposition'] = `attachment; filename="${name == '' ? 'directory' : name}.zip"`;
+					headers['Content-Disposition'] = makeContentDisposition(`${name == '' ? 'directory' : name}.zip`);
 					return this.handleDownload(client, filePath, headers, list);
 				}
 				return this.buildView(client, path, list, params);
@@ -1026,7 +1062,7 @@ export class FileShare extends mws.ModuleHandler {
 			language: 'en',
 			head: [
 				b.Meta('viewport', 'width=device-width, initial-scale=1'),
-				b.Title(`Directory: ${title}`),
+				b.Title(title == '' ? 'Root Directory' : `Directory: ${title}`),
 				b.Meta('Description', `Content of directory ${path}`),
 				b.LoadStyle(this.staticPath(client, '/style.css')),
 				b.LoadScript(this.staticPath(client, '/main.js')),
@@ -1037,7 +1073,7 @@ export class FileShare extends mws.ModuleHandler {
 		client.respondHtml(page);
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
-		/* check if the listener needs to be created */
+		/* check if the listener needs to be created (path will already be fully expanded) */
 		if (!(path in this.listener)) {
 			const filePath = this.fileStorage(path);
 			try {
@@ -1182,7 +1218,8 @@ export class FileShare extends mws.ModuleHandler {
 			upload: (typeof raw?.upload == 'boolean' ? raw : this.defaultParams).upload,
 			delete: (typeof raw?.delete == 'boolean' ? raw : this.defaultParams).delete,
 			uploadMTime: (typeof raw?.uploadMTime == 'boolean' ? raw : this.defaultParams).uploadMTime,
-			maxUpload: (typeof raw?.maxUpload == 'number' && isFinite(raw.maxUpload) ? raw : this.defaultParams).maxUpload
+			maxUpload: (typeof raw?.maxUpload == 'number' && isFinite(raw.maxUpload) ? raw : this.defaultParams).maxUpload,
+			rebase: (typeof raw?.rebase == 'string' ? mws.sanitize(raw.rebase, false) : this.defaultParams.rebase)
 		};
 		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
 
@@ -1208,7 +1245,7 @@ export class FileShare extends mws.ModuleHandler {
 			*	stop method is not entered before the full accept has been performed) */
 			const ws = await client.acceptWebSocket();
 			if (ws != null)
-				this.acceptWebSocket(ws, path);
+				this.acceptWebSocket(ws, mws.joinSanitized(params.rebase, path));
 			return;
 		}
 

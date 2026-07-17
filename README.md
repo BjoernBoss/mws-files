@@ -26,6 +26,7 @@ addLogger(createConsoleLogger());
 
 const server = new Server();
 const share = new FileShare('./data/share', {
+    access: true,
     upload: true,
     delete: true
 });
@@ -76,12 +77,16 @@ The `Params` object controls module behavior and access. All fields are optional
 
 | Field | Default | Description |
 |---|---|---|
+| `access` | `false` | Access content at all - browsing, downloading, copy jobs, and change listeners all require it |
 | `upload` | `false` | Upload files, create directories, and copy or move content |
 | `delete` | `false` | Delete content (also required to move content) |
 | `uploadMTime` | `false` | Preserve the client-supplied modification time of uploads, otherwise reset to current time |
 | `maxUpload` | `100000000` (100 MB) | Largest content to upload or copy in bytes (`0` implies no limit) |
+| `rebase` | `'/'` | Sub-directory of the share to serve as the connection's root (must be a directory) |
 
-Without any parameters the share is read-only. Parameters can also be set per-request through `params` when dispatching to the module. Request parameter override the corresponding default, allowing parent modules to implement authentication or per-route access policies.
+Without any parameters the share is inaccessible; `access: true` alone yields a read-only share. Parameters can also be set per-request through `params` when dispatching to the module. Request parameters override the corresponding default, allowing parent modules to implement authentication or per-route access policies.
+
+With `rebase`, all paths of the connection - served content, copy and move targets, and watched directories - are resolved relative to the given sub-directory, and nothing outside of it can be reached. The rebasing is fully transparent to clients, which makes per-request `rebase` suitable for handing each user their own root within a shared data directory.
 
 ## Endpoints
 
@@ -97,15 +102,17 @@ The `Endpoints` export provides the path constants used by the module. All paths
 | `/static/*` | GET | Static assets (CSS, JS, icons) served with immutable cache headers |
 | `/ws/{path}` | WebSocket | Listen for changes of a directory |
 
-Path components may not contain control characters or any of `/ \ ? : * " < > |`. The root directory itself can only be read, never modified, and cannot be the target of a copy or move.
+All endpoints except `/static` additionally require `Params.access`; without it they respond with 403.
+
+Path components may not contain control characters or any of `/ \ ? : * " < > |`. The (possibly rebased) root directory itself can only be read, never modified, and cannot be the direct target of a copy or move, but can be copied/moved into.
 
 ## Files API
 
-Every response of the `/files` endpoint carries a `Kind` header (`file` or `directory`) identifying what was served. The optional query parameter `kind=file|directory` restricts the request to the given kind; a mismatch results in 409. For GET without `kind`, a file is preferred over a directory of the same path.
+Every response of the `/files` endpoint carries a `Kind` header (`file` or `directory`) identifying what was served, and a `Path` header echoing the served path in the shared file space (URI-encoded like paths in the URL). The optional query parameter `kind=file|directory` restricts the request to the given kind; a mismatch results in 409. For requests without `kind`, a file is preferred over a directory of the same path.
 
 ### Reading (GET)
 
-- A file is served directly (range requests and content encoding are handled by the framework); `download=true` adds a `Content-Disposition: attachment` header.
+- A file is served directly (range requests and content encoding are handled by the framework); `download=true` adds a `Content-Disposition: attachment` header (the filename is given as RFC 8187 `filename*`, with an alternative ascii `filename` fallback).
 - A directory is served as the interactive HTML browser view by default. With `raw=true` the JSON listing is returned instead, and with `download=true` the directory is streamed as a ZIP archive (`{name}.zip`).
 
 The JSON listing maps entry names to their metadata:
