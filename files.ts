@@ -650,16 +650,20 @@ export class FileShare extends mws.ModuleHandler {
 		if (!params.upload)
 			return client.respondForbidden({ reason: 'Not allowed to upload content' });
 
-		const reservation = client.url.searchParams.get('reservation') ?? '';
+		let reservation = client.url.searchParams.get('reservation') ?? '';
 		const mtime = (params.uploadMTime ? parseInt(client.url.searchParams.get('mtime') ?? '') : NaN);
+		const implicit = (!client.url.searchParams.has('reservation') && !client.url.searchParams.has('reserve'));
 
 		try {
-			/* check if the path is to be reserved or is already reserved (all bad paths are already responded) */
-			if (client.url.searchParams.get('reserve') == 'true') {
+			/* check if the path is to be reserved or is already reserved (failure to reserve
+			*	will automatically respond) or reserve implicitly (for the error message) */
+			if (client.url.searchParams.get('reserve') == 'true' || implicit) {
 				const id = await this.tryReservePath(client, filePath, parentIsRoot, reservation);
-				if (id != null)
-					client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
-				return;
+				if (id == null)
+					return;
+				if (!implicit)
+					return client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
+				reservation = id;
 			}
 			if (!this.checkOrUseReservation(client, filePath, reservation))
 				return;
