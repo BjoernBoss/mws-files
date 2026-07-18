@@ -125,17 +125,19 @@ For directories, `size` is the number of contained entries; `modified` is the mo
 
 ### Uploading (POST)
 
-- `kind=file` (default): the request body becomes the file content; fails with 409 if the path already exists. The body size is limited by `Params.maxUpload`.
-- `kind=directory`: creates an empty directory; with `silent=true`, an already existing directory responds OK instead of 409.
+- `kind=file` (default): the request body becomes the file content; fails with 409 if the path already exists. The body size is limited by `Params.maxUpload` (413 if exceeded).
+- `kind=directory`: creates an empty directory; with `silent=true`, an already existing directory responds OK instead of 409 (this also applies to `reserve=true` requests, which then respond without a `Reservation-Id` header).
 - `mtime={ms}`: sets the modification time of the created content (only honored when `Params.uploadMTime` is enabled).
 - `reserve=true`: instead of uploading, reserves the path for 5 seconds and responds with a `Reservation-Id` header. While a reservation is active, only requests passing the id back via `reservation={id}` may claim the path. This allows clients to atomically pick a free name before starting a large upload.
+
+In all cases the parent directory of the path must already exist; intermediate directories are never created implicitly.
 
 ### Copying and Moving (PUT)
 
 Exactly one of `copy={target}` or `move={target}` must be given, where the target is the full destination path within the share (given decoded in the query string). The destination must not exist yet and its parent directory must exist; `reservation={id}` may pass a previously created reservation for the destination.
 
 - `move`: renames the file or directory (`kind` selects the expected source kind). Requires `Params.upload` and `Params.delete`.
-- `copy`: only files can be copied, and `Params.maxUpload` is enforced on the source size. The copy runs as a background job: the response carries a `Job-Id` header, and progress can be polled via `/jobs/{id}`. Requires `Params.upload`.
+- `copy`: only files can be copied, and `Params.maxUpload` is enforced on the source size (413 if exceeded). The copy runs as a background job: the response carries a `Job-Id` header, and progress can be polled via `/jobs/{id}`. Requires `Params.upload`.
 
 ### Deleting (DELETE)
 

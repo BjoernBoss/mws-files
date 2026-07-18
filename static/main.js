@@ -41,6 +41,8 @@ _state.fs = {
 	handleFetchResponse: async (response) => {
 		if (response.status == 404)
 			return 'Path not found';
+		if (response.status == 413)
+			return 'File is too large';
 		if (response.status == 400 || response.status == 409) {
 			let reason = null;
 			try { reason = await response.text(); } catch (_) { }
@@ -276,7 +278,7 @@ _state.fullPath = (...paths) => {
 	return buildPath(_state.config.path, ...paths);
 }
 _state.encodePath = (path) => {
-	return buildPath(_state.config.files, path).split('/').map((val) => encodeURIComponent(val)).join('/');
+	return buildPath(_state.config.files, path.split('/').map((val) => encodeURIComponent(val)).join('/'));
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {

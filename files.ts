@@ -537,7 +537,32 @@ export class FileShare extends mws.ModuleHandler {
 		delete this.reservations.entries[filePath];
 		return true;
 	}
-	private async tryReservePath(client: mws.ClientRequest, filePath: string, parentIsRoot: boolean, reservation: string): Promise<string | null> {
+	private async checkParentState(client: mws.ClientRequest, filePath: string, parentIsRoot: boolean): Promise<boolean> {
+		const parentPath = mws.joinNative(filePath, '..');
+
+		try {
+			/* check if the parent directory exists */
+			const stats = await libFsPromises.stat(parentPath);
+			if (stats.isDirectory())
+				return true;
+
+			if (!parentIsRoot && stats.isFile()) {
+				client.respondConflict({ message: 'Parent is not a directory' });
+				return false;
+			}
+
+			if (!stats.isDirectory() && !stats.isFile())
+				this.warning(`Unsupported file-system object encountered: ${parentPath}`);
+		} catch (_) { }
+
+		/* errors or bad type is considered to not exist */
+		if (parentIsRoot)
+			client.respondInternalError('Root does not exist');
+		else
+			client.respondConflict({ message: 'Parent does not exist' });
+		return false;
+	}
+	private async tryReservePath(client: mws.ClientRequest, filePath: string, parentIsRoot: boolean, reservation: string, silent: boolean): Promise<string | null> {
 		/* check if the path is already reserved */
 		if (!this.checkOrUseReservation(client, filePath, reservation))
 			return null;
@@ -548,35 +573,37 @@ export class FileShare extends mws.ModuleHandler {
 		this.triggerCheckReservations();
 		client.trace(`Reserved path [${filePath}] under id [${id}]`);
 
-		try {
-			/* check if the path already exists */
-			const stat = await libFsPromises.stat(filePath);
-			if (!stat.isDirectory() && !stat.isFile())
-				this.warning(`Unsupported file-system object encountered: ${filePath}`);
-			client.respondConflict({ message: `Path already exists` });
-			delete this.reservations.entries[filePath];
-			return null;
-		}
-		catch (err: any) {
-			if (err.code != 'ENOENT') {
-				client.respondInternalError(`Failed to reserve [${filePath}]: ${err.message}`);
-				delete this.reservations.entries[filePath];
-				return null;
-			}
+		const result = await (async (): Promise<boolean> => {
+			try {
+				/* check if the path already exists (for a silent check, dont reserve the path anymore) */
+				const stat = await libFsPromises.stat(filePath);
+				if (silent && stat.isDirectory()) {
+					client.respondOk({ message: 'Already exists' });
+					return false;
+				}
 
-			/* check if the parent directory exists */
-			let parentExists = false;
-			try { parentExists = (await libFsPromises.stat(mws.joinNative(filePath, '..'))).isDirectory(); } catch (_) { }
-			if (!parentExists) {
-				if (parentIsRoot)
-					client.respondInternalError('Root does not exist');
-				else
-					client.respondBadRequest({ message: 'Parent does not exist' });
-				delete this.reservations.entries[filePath];
-				return null;
+				if (!stat.isDirectory() && !stat.isFile())
+					this.warning(`Unsupported file-system object encountered: ${filePath}`);
+				client.respondConflict({ message: `Path already exists` });
+				return false;
 			}
+			catch (err: any) {
+				if (err.code != 'ENOENT') {
+					client.respondInternalError(`Failed to reserve [${filePath}]: ${err.message}`);
+					return false;
+				}
+
+				/* check if the parent directory exists */
+				return this.checkParentState(client, filePath, parentIsRoot);
+			}
+		})();
+
+		/* return the id or cleanup the temporary reservation */
+		if (result)
 			return id;
-		}
+		if (this.reservations.entries[filePath]?.id == id)
+			delete this.reservations.entries[filePath];
+		return null;
 	}
 	private async checkPathKind(client: mws.ClientRequest, filePath: string, kind: FileKind): Promise<boolean> {
 		/* let errors propagate out */
@@ -652,18 +679,16 @@ export class FileShare extends mws.ModuleHandler {
 
 		let reservation = client.url.searchParams.get('reservation') ?? '';
 		const mtime = (params.uploadMTime ? parseInt(client.url.searchParams.get('mtime') ?? '') : NaN);
-		const implicit = (!client.url.searchParams.has('reservation') && !client.url.searchParams.has('reserve'));
+		const silent = (kind == 'directory' && client.url.searchParams.get('silent') == 'true');
+		const reserve = (client.url.searchParams.get('reserve') == 'true');
 
 		try {
-			/* check if the path is to be reserved or is already reserved (failure to reserve
-			*	will automatically respond) or reserve implicitly (for the error message) */
-			if (client.url.searchParams.get('reserve') == 'true' || implicit) {
-				const id = await this.tryReservePath(client, filePath, parentIsRoot, reservation);
-				if (id == null)
-					return;
-				if (!implicit)
-					return client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
-				reservation = id;
+			/* check if the path is to be reserved or is already reserved (failure to reserve will automatically respond) */
+			if (reserve) {
+				const id = await this.tryReservePath(client, filePath, parentIsRoot, reservation, silent);
+				if (id != null)
+					client.respondOk({ message: 'Reservation registered', headers: { 'Reservation-Id': id } });
+				return;
 			}
 			if (!this.checkOrUseReservation(client, filePath, reservation))
 				return;
@@ -685,13 +710,14 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
-			if (err.code == 'ENOENT')
-				return client.respondNotFound();
+			/* in case of 'ENOENT', a 'existing parent' does not make alot of sense (race-condition? => fail) */
+			if (err.code == 'ENOENT' && !await this.checkParentState(client, filePath, parentIsRoot))
+				return;
 			if (err.code != 'EEXIST')
 				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err.message}`);
 
 			/* check if the directory already existed and should fail silently */
-			if (kind == 'directory' && client.url.searchParams.get('silent') == 'true') {
+			if (silent) {
 				try {
 					if ((await libFsPromises.stat(filePath)).isDirectory())
 						return client.respondOk({ message: `Already exists` });
@@ -702,7 +728,7 @@ export class FileShare extends mws.ModuleHandler {
 	}
 	private async handleCopy(client: mws.ClientRequest, filePath: string, fileTarget: string, reservation: string, params: BurntParams): Promise<void> {
 		let stream: mws.FileReadable | null = null;
-		let success = ((): boolean => {
+		const success = ((): boolean => {
 			try {
 				/* open the source file for reading */
 				stream = this.cache.stream(filePath, { checkFreshness: true, eager: true });
@@ -713,7 +739,7 @@ export class FileShare extends mws.ModuleHandler {
 
 				/* validate the size constraints (must destroy the stream) */
 				if (params.maxUpload != 0 && stream.fileSize > params.maxUpload) {
-					client.respondConflict({ message: 'File is too large to be copied' });
+					client.respondContentTooLarge(params.maxUpload, stream.fileSize);
 					return false;
 				}
 			} catch (err: any) {
@@ -812,7 +838,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* validate the target path (query parameters are received decoded, hence only sanitize the path and validate its components) */
 		const target = mws.sanitize(client.url.searchParams.get(isCopy ? 'copy' : 'move')!, false);
 		if (target == '/')
-			return client.respondBadRequest({ message: `Root cannot be a ${isCopy ? 'copy' : 'move'} target` });
+			return client.respondForbidden({ message: `Root cannot be a ${isCopy ? 'copy' : 'move'} target` });
 		for (const name of target.substring(1).split('/')) {
 			if (!name.match(VALID_NAME_REGEX))
 				return client.respondBadRequest({ message: `Invalid path component [${name}]` });
@@ -830,7 +856,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		/* validate and reserve the destination (ensures parent exists and name cannot be used again) */
-		const reservation = await this.tryReservePath(client, fileTarget, (mws.splitFileName(target)[0] == '/'), (client.url.searchParams.get('reservation') ?? ''));
+		const reservation = await this.tryReservePath(client, fileTarget, (mws.splitFileName(target)[0] == '/'), (client.url.searchParams.get('reservation') ?? ''), false);
 		if (reservation == null)
 			return;
 
@@ -950,7 +976,7 @@ export class FileShare extends mws.ModuleHandler {
 			if (method != 'GET')
 				return client.respondForbidden({ message: 'Root cannot be modified' });
 			if (kind == 'file')
-				return client.respondBadRequest({ message: 'Root is a directory' });
+				return client.respondConflict({ message: 'Root is a directory' });
 		}
 
 		/* check if the entry is to be deleted or uploaded or moved */
@@ -962,7 +988,7 @@ export class FileShare extends mws.ModuleHandler {
 			return this.handleDelete(client, filePath, (kind ?? 'file'), params);
 
 		/* try to serve it as a file (rebased-root cannot be served as a file) */
-		if (kind == null || kind == 'file') {
+		if ((kind == null || kind == 'file') && path != '/') {
 			const headers: Record<string, string> = { 'Kind': 'file', 'Path': this.encodePath(path) };
 
 			/* check if its supposed to be a download */
@@ -979,13 +1005,14 @@ export class FileShare extends mws.ModuleHandler {
 			try {
 				const headers: Record<string, string> = { 'Kind': 'directory', 'Path': this.encodePath(path) };
 
-				/* try to read the directory state (for the root, pretend the directory is empty, if it does not exist) */
+				/* try to read the directory state (for the root, any reading error is
+				*	considered an internal server error, as it is expected to exist) */
 				let list: Record<string, DirEntry> = {};
 				try { list = await this.fetchDirectoryList(filePath); }
 				catch (err: any) {
-					if (err.code != 'ENOENT' || path != '/')
+					if (path != '/')
 						throw err;
-					this.warning(`Root [${filePath}] does not exist`);
+					return client.respondInternalError(`Root [${filePath}] error: ${err.message}`);
 				}
 
 				/* check if the directory should be served in raw */
