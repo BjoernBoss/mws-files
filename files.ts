@@ -1042,7 +1042,7 @@ export class FileShare extends mws.ModuleHandler {
 		return client.respondNotFound();
 	}
 	private staticPath(client: mws.ClientRequest, path: string): string {
-		return client.makePath(this.cache.immutable(this.name, mws.joinSanitized(Endpoints.static, path)));
+		return client.makeImmutable(this.name, mws.joinSanitized(Endpoints.static, path));
 	}
 	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>, params: BurntParams): Promise<void> {
 		/* fetch the content of the main view */
