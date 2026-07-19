@@ -7,7 +7,7 @@ import * as libFsPromises from "fs/promises";
 import * as libStream from "stream";
 import * as libZlib from "zlib";
 
-const DEFAULT_MAX_UPLOAD_SIZE = 100_000_000;
+const DEFAULT_UPLOAD_LIMIT = 100_000_000;
 const MAX_RESERVATION_TIME_MS = 5_000;
 const JOB_STATE_TIMEOUT_MS = 180_000;
 const WATCHER_GRACE_MS = 30_000;
@@ -43,7 +43,7 @@ interface BurntParams {
 	upload: boolean;
 	delete: boolean;
 	uploadMTime: boolean;
-	maxUpload: number;
+	uploadLimit: number;
 	rebase: string;
 }
 
@@ -412,7 +412,7 @@ export interface Params {
 	uploadMTime?: boolean;
 
 	/** largest content to copy or upload (0 implies no limit; default: 100MB) */
-	maxUpload?: number;
+	uploadLimit?: number;
 
 	/** rebase the connections root to a sub-directory, thereby limiting all of its moves (must be a directory; default: '/') */
 	rebase?: string;
@@ -475,7 +475,7 @@ export class FileShare extends mws.ModuleHandler {
 			access: params?.access ?? false,
 			upload: params?.upload ?? false,
 			delete: params?.delete ?? false,
-			maxUpload: params?.maxUpload ?? DEFAULT_MAX_UPLOAD_SIZE,
+			uploadLimit: params?.uploadLimit ?? DEFAULT_UPLOAD_LIMIT,
 			uploadMTime: params?.uploadMTime ?? false,
 			rebase: mws.sanitize(params?.rebase ?? '/', false)
 		};
@@ -706,7 +706,7 @@ export class FileShare extends mws.ModuleHandler {
 			}
 
 			/* try to upload the file (automatically enforces upload-size constraint) */
-			await this.cache.write(filePath, client.receiveData(params.maxUpload == 0 ? null : params.maxUpload), { create: true, mtime: (isNaN(mtime) ? undefined : mtime) });
+			await this.cache.write(filePath, client.receiveData(params.uploadLimit == 0 ? null : params.uploadLimit), { create: true, mtime: (isNaN(mtime) ? undefined : mtime) });
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
@@ -738,8 +738,8 @@ export class FileShare extends mws.ModuleHandler {
 				}
 
 				/* validate the size constraints (must destroy the stream) */
-				if (params.maxUpload != 0 && stream.fileSize > params.maxUpload) {
-					client.respondContentTooLarge(params.maxUpload, stream.fileSize);
+				if (params.uploadLimit != 0 && stream.fileSize > params.uploadLimit) {
+					client.respondContentTooLarge(params.uploadLimit, stream.fileSize);
 					return false;
 				}
 			} catch (err: any) {
@@ -1061,7 +1061,7 @@ export class FileShare extends mws.ModuleHandler {
 		const loadParams: string = JSON.stringify({
 			delete: params.delete,
 			upload: params.upload,
-			maxUploadSize: params.maxUpload,
+			uploadLimit: params.uploadLimit,
 			path,
 			files: client.makePath(Endpoints.files),
 			jobs: client.makePath(Endpoints.jobs),
@@ -1104,6 +1104,8 @@ export class FileShare extends mws.ModuleHandler {
 		client.respondHtml(page);
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
+		client.log(`Subscribe to changes of [${path}]`);
+
 		/* check if the listener needs to be created (path will already be fully expanded) */
 		if (!(path in this.listener)) {
 			const filePath = this.fileStorage(path);
@@ -1157,9 +1159,9 @@ export class FileShare extends mws.ModuleHandler {
 				};
 
 				/* synchronize the child watchers with the given directory state (changes within immediate
-				*	sub-directories modify the listed metadata - item count and modified time - but do not trigger
-				*	the main watcher on all platforms; child errors are non-fatal, as any structural change of the
-				*	child will trigger the main watcher, which re-synchronizes the child watchers) */
+				*	sub-directories modify the listed metadata (item count and modified time) but do not trigger
+				*	the main watcher on all platforms; child errors are non-fatal, as any structural change
+				*	of the child will trigger the main watcher, which re-synchronizes the child watchers) */
 				const syncChildren = (list: Record<string, DirEntry>) => {
 					for (const [name, child] of entry.children) {
 						if (list[name]?.kind == 'directory')
@@ -1196,6 +1198,8 @@ export class FileShare extends mws.ModuleHandler {
 						syncChildren(list);
 
 						if (!broadcast) return;
+						this.trace(`Notifying listener about directory change: [${filePath}]`);
+
 						const state = JSON.stringify(list);
 						for (const ws of entry.ws)
 							ws.send(state);
@@ -1220,8 +1224,9 @@ export class FileShare extends mws.ModuleHandler {
 				changed(false);
 			}
 			catch (err: any) {
+				/* in case of the path not being found, pretend it has been removed */
 				this.error(`Failed watching path [${filePath}]: ${err.message}`);
-				client.send('error');
+				client.send(err.code == 'ENOENT' ? 'removed' : 'error');
 				client.close();
 				return;
 			}
@@ -1237,6 +1242,7 @@ export class FileShare extends mws.ModuleHandler {
 		/* no need to listen for data, as this is only a notification channel */
 		client.on('close', () => {
 			entry.ws.delete(client);
+			client.log(`Unsubscribe from changes of [${path}]`);
 
 			/* check if this was the last listener, and the watcher should be closed */
 			if (entry.ws.size == 0 && !entry.settled)
@@ -1249,10 +1255,10 @@ export class FileShare extends mws.ModuleHandler {
 			upload: (typeof raw?.upload == 'boolean' ? raw : this.defaultParams).upload,
 			delete: (typeof raw?.delete == 'boolean' ? raw : this.defaultParams).delete,
 			uploadMTime: (typeof raw?.uploadMTime == 'boolean' ? raw : this.defaultParams).uploadMTime,
-			maxUpload: (typeof raw?.maxUpload == 'number' && isFinite(raw.maxUpload) ? raw : this.defaultParams).maxUpload,
+			uploadLimit: (typeof raw?.uploadLimit == 'number' && isFinite(raw.uploadLimit) ? raw : this.defaultParams).uploadLimit,
 			rebase: (typeof raw?.rebase == 'string' ? mws.sanitize(raw.rebase, false) : this.defaultParams.rebase)
 		};
-		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | M: ${params.maxUpload})`);
+		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | L: ${params.uploadLimit})`);
 
 		/* check if its a request for the files API (allow root itself for reading it) */
 		if (client.isSubPathOf(Endpoints.files)) {

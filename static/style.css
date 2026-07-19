@@ -683,6 +683,19 @@
 	}
 }
 
+.task .clickable {
+	user-select: none;
+	background-color: #00000020;
+	border: solid 1px black;
+	border-radius: 3px;
+	margin: 4px 0px;
+	align-self: start;
+}
+
+.task .clickable .button {
+	padding: 4px 8px;
+}
+
 .status-base {
 	color: #0060c0;
 }

@@ -66,10 +66,9 @@ The directory view is an elaborate single-page browser frontend, built entirely 
 
 - All operations report through stacked toast notifications with status texts, per-file progress bars, and overall counters; copy jobs are polled once per second and their progress is animated using a speculative forecast between polls.
 - Bulk operations run at most 3 remote requests concurrently, skip entries whose parent operation failed, and abort after 12 failures.
-- The listing is updated optimistically after each successful operation, without re-fetching the directory.
+- A live change-listener WebSocket connection is established to update the view on changes.
+- The listing is updated optimistically after each successful operation, without re-fetching the directory, as this will be reported through the change-listener.
 - Navigating away is guarded by a confirmation prompt while operations are still running.
-
-The live change-listener WebSocket is currently not used by the frontend; it is available for API clients.
 
 ## Parameters
 
@@ -81,7 +80,7 @@ The `Params` object controls module behavior and access. All fields are optional
 | `upload` | `false` | Upload files, create directories, and copy or move content |
 | `delete` | `false` | Delete content (also required to move content) |
 | `uploadMTime` | `false` | Preserve the client-supplied modification time of uploads, otherwise reset to current time |
-| `maxUpload` | `100000000` (100 MB) | Largest content to upload or copy in bytes (`0` implies no limit) |
+| `uploadLimit` | `100000000` (100 MB) | Largest content to upload or copy in bytes (`0` implies no limit) |
 | `rebase` | `'/'` | Sub-directory of the share to serve as the connection's root (must be a directory) |
 
 Without any parameters the share is inaccessible; `access: true` alone yields a read-only share. Parameters can also be set per-request through `params` when dispatching to the module. Request parameters override the corresponding default, allowing parent modules to implement authentication or per-route access policies.
@@ -125,7 +124,7 @@ For directories, `size` is the number of contained entries; `modified` is the mo
 
 ### Uploading (POST)
 
-- `kind=file` (default): the request body becomes the file content; fails with 409 if the path already exists. The body size is limited by `Params.maxUpload` (413 if exceeded).
+- `kind=file` (default): the request body becomes the file content; fails with 409 if the path already exists. The body size is limited by `Params.uploadLimit` (413 if exceeded).
 - `kind=directory`: creates an empty directory; with `silent=true`, an already existing directory responds OK instead of 409 (this also applies to `reserve=true` requests, which then respond without a `Reservation-Id` header).
 - `mtime={ms}`: sets the modification time of the created content (only honored when `Params.uploadMTime` is enabled).
 - `reserve=true`: instead of uploading, reserves the path for 5 seconds and responds with a `Reservation-Id` header. While a reservation is active, only requests passing the id back via `reservation={id}` may claim the path. This allows clients to atomically pick a free name before starting a large upload.
@@ -137,7 +136,7 @@ In all cases the parent directory of the path must already exist; intermediate d
 Exactly one of `copy={target}` or `move={target}` must be given, where the target is the full destination path within the share (given decoded in the query string). The destination must not exist yet and its parent directory must exist; `reservation={id}` may pass a previously created reservation for the destination.
 
 - `move`: renames the file or directory (`kind` selects the expected source kind). Requires `Params.upload` and `Params.delete`.
-- `copy`: only files can be copied, and `Params.maxUpload` is enforced on the source size (413 if exceeded). The copy runs as a background job: the response carries a `Job-Id` header, and progress can be polled via `/jobs/{id}`. Requires `Params.upload`.
+- `copy`: only files can be copied, and `Params.uploadLimit` is enforced on the source size (413 if exceeded). The copy runs as a background job: the response carries a `Job-Id` header, and progress can be polled via `/jobs/{id}`. Requires `Params.upload`.
 
 ### Deleting (DELETE)
 
@@ -155,7 +154,7 @@ A copy job created by PUT `copy` can be polled via GET `/jobs/{id}`:
 
 ## WebSocket Protocol
 
-Clients connect to `/ws/{path}` to listen for changes of a directory (only directories can be watched). Whenever the directory content changes, the server broadcasts the full JSON directory listing (same format as `raw=true`). Notifications are coalesced to at most one per 2 seconds. Changes within immediate sub-directories, which alter the listed entry count and modification time, are tracked as well. Clients never need to send data, as this is only a notification channel.
+Clients connect to `/ws/{path}` to listen for changes of a directory (only directories can be watched). Whenever the directory content changes, the server broadcasts the full JSON directory listing (same format as `raw=true`). Notifications are coalesced over a timespan of a few seconds. Changes within immediate sub-directories, which alter the listed entry count and modification time, are tracked as well. Clients never need to send data, as this is only a notification channel.
 
 Besides listings, the server sends one of three string identifiers:
 
@@ -163,4 +162,4 @@ Besides listings, the server sends one of three string identifiers:
 - **`"error"`**: watching the directory failed.
 - **`"close"`**: the server is shutting down.
 
-After an identifier is sent, the server closes the WebSocket. The underlying file-system watcher is kept alive for a 30 second grace period after the last listener disconnects, to handle quick reconnections.
+After an identifier is sent, the server closes the WebSocket. The underlying file-system watcher is kept alive for a ceratin grace period after the last listener disconnects, to handle quick reconnections.

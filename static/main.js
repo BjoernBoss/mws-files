@@ -12,9 +12,11 @@ const FILE_COPY_JOB_PROGRESS_STEPS = 15;
 const FILE_COPY_JOB_MAX_POLL_FAILURES = 3;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
+const SOCKET_CONNECTION_RETRIES = 3;
+const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null }, busy: 0 };
+const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null }, busy: 0, socket: { ws: null, count: 0, timer: null } };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -36,6 +38,9 @@ function buildPath(...paths) {
 	}
 	return out;
 }
+function buildEncoded(path) {
+	return path.split('/').map((val) => encodeURIComponent(val)).join('/');
+}
 
 _state.fs = {
 	handleFetchResponse: async (response) => {
@@ -54,7 +59,7 @@ _state.fs = {
 		let response = null;
 
 		/* fetch the response from the server */
-		try { response = await fetch(`${_state.encodePath(path)}?raw=true&kind=directory`); }
+		try { response = await fetch(`${_state.encodeFilePath(path)}?raw=true&kind=directory`); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -80,7 +85,7 @@ _state.fs = {
 
 		/* try to create the new directory */
 		const query = (mtime == null ? '' : `&mtime=${mtime}`);
-		try { response = await fetch(`${_state.encodePath(path)}?kind=directory&silent=${silent ? 'true' : 'false'}${query}`, { method: 'POST' }); }
+		try { response = await fetch(`${_state.encodeFilePath(path)}?kind=directory&silent=${silent ? 'true' : 'false'}${query}`, { method: 'POST' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -95,7 +100,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to remove the object */
-		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}`, { method: 'DELETE' }); }
+		try { response = await fetch(`${_state.encodeFilePath(path)}?kind=${kind}`, { method: 'DELETE' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -107,7 +112,7 @@ _state.fs = {
 			throw await _state.fs.handleFetchResponse(response);
 	},
 	upload: (path, progress, file) => new Promise(async (resolve, reject) => {
-		const baseUrl = `${_state.encodePath(path)}?kind=file`;
+		const baseUrl = `${_state.encodeFilePath(path)}?kind=file`;
 
 		/* try to reserve the given path (to test if its valid/available, before writing data to it) */
 		let response = null, settled = false;
@@ -148,7 +153,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to move the object */
-		try { response = await fetch(`${_state.encodePath(path)}?kind=${kind}&move=${encodeURIComponent(target)}`, { method: 'PUT' }); }
+		try { response = await fetch(`${_state.encodeFilePath(path)}?kind=${kind}&move=${encodeURIComponent(target)}`, { method: 'PUT' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -163,7 +168,7 @@ _state.fs = {
 		let response = null;
 
 		/* try to start the copy operation */
-		try { response = await fetch(`${_state.encodePath(path)}?copy=${encodeURIComponent(target)}`, { method: 'PUT' }); }
+		try { response = await fetch(`${_state.encodeFilePath(path)}?copy=${encodeURIComponent(target)}`, { method: 'PUT' }); }
 		catch (_) {
 			throw 'Network error';
 		}
@@ -277,8 +282,8 @@ _state.batch = async (task) => {
 _state.fullPath = (...paths) => {
 	return buildPath(_state.config.path, ...paths);
 }
-_state.encodePath = (path) => {
-	return buildPath(_state.config.files, path.split('/').map((val) => encodeURIComponent(val)).join('/'));
+_state.encodeFilePath = (path) => {
+	return buildPath(_state.config.files, buildEncoded(path));
 }
 _state.formatSize = (size) => {
 	for (const option of UNIT_PREFIX_LIST) {
@@ -331,7 +336,7 @@ _state.makeLocation = (path, cb) => {
 
 	/* update the logic for home */
 	if (cb == null)
-		home.href = _state.encodePath('/');
+		home.href = _state.encodeFilePath('/');
 	else if (path == '/')
 		home.classList.add('disabled');
 	else
@@ -348,7 +353,7 @@ _state.makeLocation = (path, cb) => {
 
 		/* wire up the button logic */
 		if (cb == null)
-			entry.href = _state.encodePath(path.substring(0, end));
+			entry.href = _state.encodeFilePath(path.substring(0, end));
 		else if (end < path.length)
 			entry.onclick = () => cb(path.substring(0, end));
 		else
@@ -408,7 +413,7 @@ _state.pushMessage = () => {
 
 	/* create the actual notification and return the handler callback */
 	const fadeOut = _state.pushRawNotification(upload);
-	const barTimeStarts = [];
+	const barStartTime = Date.now();
 	return (kind) => {
 		/* check if the notification should be hidden */
 		if (kind == null || typeof kind == 'boolean')
@@ -449,29 +454,13 @@ _state.pushMessage = () => {
 			const fill = bar.appendChild(buildElement({ class: 'fill uncertain' }));
 			const digits = element.appendChild(buildElement({ class: 'digits', text: '--%' }));
 
-			/* to ensure overlayed bars, which repeatedly end up at the same position dont constantly restart their animation time, use
-			*	the last start time at the given index as base time for the animation, hence just picking the uncertain animation back up */
-			let startTime = Date.now();
-			if (barTimeStarts.length >= upload.children.length && barTimeStarts[upload.children.length - 1] != null) {
-				fill.style.animationDelay = `-${startTime - barTimeStarts[upload.children.length - 1]}ms`;
-				startTime = barTimeStarts[upload.children.length - 1];
-			}
+			/* to ensure fast bar-swaps dont all repeatedly restart the uncertainty animation, ensure they
+			*	all start at the same time to run synchronized, and overlay smoothly with previous bars */
+			fill.style.animationDelay = `-${Date.now() - barStartTime}ms`;
 
 			return (value, progress) => {
-				if (value == null && progress == null) {
-					/* lookup the entries slot in the current message body and check if it has already been dropped */
-					let index = 0;
-					while (index < upload.children.length && upload.children[index] != element)
-						++index;
-					if (index >= upload.children.length)
-						return;
-
-					/* write back the current animation delay start time */
-					while (barTimeStarts.length <= index)
-						barTimeStarts.push(null);
-					barTimeStarts[index] = startTime;
+				if (value == null && progress == null)
 					return element.remove();
-				}
 
 				if (value != null)
 					text.innerText = value;
@@ -482,6 +471,21 @@ _state.pushMessage = () => {
 					fill.style.width = value;
 					digits.innerText = value;
 				}
+			};
+		}
+
+		/* check if a new button should be pushed */
+		if (kind == 'button') {
+			const element = upload.appendChild(buildElement({ class: 'clickable' }));
+			const button = element.appendChild(buildElement({ class: 'button', text: '...' }));
+
+			return (value, onclick) => {
+				if (value == null && onclick == null)
+					return element.remove();
+				if (value != null)
+					button.innerText = value;
+				if (onclick != null)
+					button.onclick = onclick;
 			};
 		}
 	};
@@ -596,7 +600,7 @@ _state.showEntryMenu = (entry) => {
 	content.children[0].children[1].innerText = 'Open';
 	content.children[0].onclick = () => {
 		if (validateEntry(true))
-			document.location = _state.encodePath(_state.fullPath(entry.name));
+			document.location = _state.encodeFilePath(_state.fullPath(entry.name));
 	};
 	content.children[1].children[0].appendChild(_state.loadIcon('Download', 'download'));
 	content.children[1].children[1].innerText = 'Download';
@@ -606,7 +610,7 @@ _state.showEntryMenu = (entry) => {
 
 		/* request the actual download of the content */
 		const download = document.createElement('a');
-		download.href = `${_state.encodePath(_state.fullPath(entry.name))}?kind=${entry.kind}&download=true`;
+		download.href = `${_state.encodeFilePath(_state.fullPath(entry.name))}?kind=${entry.kind}&download=true`;
 		download.download = '';
 		download.click();
 	};
@@ -618,7 +622,7 @@ _state.showEntryMenu = (entry) => {
 		content.children[entryIndex++].onclick = () => {
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			navigator.clipboard.writeText(new URL(_state.encodePath(_state.fullPath(entry.name)), document.location).href)
+			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(entry.name)), document.location).href)
 				.then(() => _state.pushStaticText('Copied to clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
 		};
@@ -766,8 +770,8 @@ _state.showCreateMenu = () => {
 	content.children[2].children[1].replaceChildren(row1);
 
 	/* add the size marker */
-	if (_state.config.maxUploadSize != 0) {
-		const text = `Max. ${_state.formatSize(_state.config.maxUploadSize)} per file`;
+	if (_state.config.uploadLimit != 0) {
+		const text = `Max. ${_state.formatSize(_state.config.uploadLimit)} per file`;
 		row0.appendChild(buildElement({ class: 'detail', text }));
 		row1.appendChild(buildElement({ class: 'detail', text }));
 	}
@@ -1058,7 +1062,7 @@ _state.createListEntry = (params, links) => {
 
 	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
 	if (links)
-		entry.href = _state.encodePath(_state.fullPath(params.name));
+		entry.href = _state.encodeFilePath(_state.fullPath(params.name));
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
 	if (params.kind == 'directory')
@@ -1240,8 +1244,8 @@ _state.uploadContent = async (list, what) => {
 		update(file.path.substring(1));
 
 		/* check if the file is too large */
-		if (_state.config.maxUploadSize != 0 && file.size > _state.config.maxUploadSize) {
-			_state.pushStaticTask(`Upload '${file.path.substring(1)}'`, `Skipping too large file (${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
+		if (_state.config.uploadLimit != 0 && file.size > _state.config.uploadLimit) {
+			_state.pushStaticTask(`Upload '${file.path.substring(1)}'`, `Skipping too large file (${_state.formatSize(file.size)} > ${_state.formatSize(_state.config.uploadLimit)})`, false);
 			update();
 			return false;
 		}
@@ -1548,8 +1552,8 @@ _state.copyContent = async (entry, target, printTarget) => {
 		update(src.substring(1));
 
 		/* check if the file is too large */
-		if (_state.config.maxUploadSize != 0 && fileSize > _state.config.maxUploadSize) {
-			_state.pushStaticTask(`Copy '${src.substring(1)}'`, `Skipping too large file (${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.maxUploadSize)})`, false);
+		if (_state.config.uploadLimit != 0 && fileSize > _state.config.uploadLimit) {
+			_state.pushStaticTask(`Copy '${src.substring(1)}'`, `Skipping too large file (${_state.formatSize(fileSize)} > ${_state.formatSize(_state.config.uploadLimit)})`, false);
 			update();
 			return false;
 		}
@@ -1657,12 +1661,123 @@ _state.copyContent = async (entry, target, printTarget) => {
 	if (totalFailed == totalList.length)
 		message(true);
 }
+_state.setupSocket = (initial) => {
+	/* check if a previous socket needs to be dropped */
+	if (_state.socket.ws != null)
+		_state.socket.ws.close();
+	_state.socket.ws = null;
+
+	/* clear the previous backoff timer (as a new connection is to be established) */
+	if (_state.socket.timer != null)
+		clearTimeout(_state.socket.timer);
+	_state.socket.timer = null;
+
+	/* reconnection handler */
+	const tryReconnect = (message) => {
+		if (_state.socket.ws == null) {
+			_state.socket.count = SOCKET_CONNECTION_RETRIES;
+			_state.setupSocket(false);
+		}
+		message(true);
+	};
+
+	/* try to setup the new socket */
+	const path = buildPath(_state.config.sockets, buildEncoded(_state.config.path));
+	const self = new WebSocket(`${location.protocol == 'https:' ? 'wss' : 'ws'}://${location.host}${path}`);
+	_state.socket.ws = self;
+	++_state.socket.count;
+	console.log(`Connecting to listen for changes on [${self.url}]...`);
+
+	/* register the socket callback */
+	self.onmessage = (m) => {
+		if (_state.socket.ws != self) return;
+
+		/* check if its a status message (all of them result in the connection being closed) */
+		if (m.data == 'removed' || m.data == 'error' || m.data == 'close') {
+			console.log(`Message received: ${m.data}`);
+			_state.socket.ws = null;
+			self.close();
+
+			/* check if the directory has been removed (clear the list afterwards to indicate the removal) */
+			const message = _state.pushMessage();
+			if (m.data == 'removed') {
+				message('text')('The current directory has been removed!');
+				_state.updateList([]);
+			}
+
+			else if (m.data == 'error')
+				message('status')('Listening for changes: Internal error on server', false);
+			else
+				message('text')('Listening for changes: The server has shut down');
+
+			message('button')('Try to Reconnect', () => tryReconnect(message));
+			return;
+		}
+
+		/* parse the new server state and update the list */
+		try {
+			console.log('List update received');
+
+			const list = [], content = JSON.parse(m.data);
+			for (const name in content)
+				list.push({ name, ...content[name] });
+			_state.updateList(list);
+		} catch (err) {
+			console.log(`Error parsing server update message: ${err.message}`);
+			_state.socket.ws = null;
+			self.close();
+
+			const message = _state.pushMessage();
+			message('status')('Listening for changes: Malformed update', false);
+			message('button')('Reconnect', () => tryReconnect(message));
+		}
+	};
+	self.onopen = () => {
+		if (_state.socket.ws != self) return;
+		console.log('Connection established');
+		_state.socket.count = 0;
+
+		/* perform a fetch to ensure the list is up-to-date (not on the initial sync; assume it to be valid; silently ignore errors) */
+		if (initial) return;
+		_state.socket.fetching = true;
+		_state.fs.fetchDirectory(_state.config.path)
+			.then((content) => {
+				const list = [];
+				for (const name in content)
+					list.push({ name, ...content[name] });
+				_state.updateList(list);
+			})
+			.catch((e) => console.log(`Failed to fetch directory content: ${e}`));
+	};
+	self.onclose = () => {
+		if (_state.socket.ws != self) return;
+		console.log('Connection to remote side lost');
+		_state.socket.ws = null;
+
+		/* notify the user about the lost connection */
+		const message = _state.pushMessage();
+		message('status')('Listening for changes: Connection lost', false);
+		message('button')('Try to Reconnect', () => tryReconnect(message));
+	};
+	self.onerror = () => {
+		if (_state.socket.ws != self) return;
+		console.log(`Socket connection error`);
+		_state.socket.ws = null;
+
+		/* check if the connection should be re-tried */
+		if (_state.socket.count < SOCKET_CONNECTION_RETRIES)
+			return _state.socket.timer = setTimeout(() => _state.setupSocket(false), SOCKET_RECONNECT_TIMEOUT);
+		const message = _state.pushMessage();
+		message('status')('Listening for changes: Network error', false);
+		message('button')('Retry', () => tryReconnect(message));
+	};
+}
 
 window.onload = () => {
 	/* parse the initial configuration */
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
 	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
-	_state.config.maxUploadSize = (__LOAD_PARAMS__?.maxUploadSize ?? 0);
+	_state.config.uploadLimit = (__LOAD_PARAMS__?.uploadLimit ?? 0);
 	_state.config.path = (__LOAD_PARAMS__?.path ?? '/');
 	_state.config.files = (__LOAD_PARAMS__?.files ?? '/bad_path');
 	_state.config.jobs = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
@@ -1677,17 +1792,18 @@ window.onload = () => {
 		return "keep";
 	};
 
-	/* setup the initial icons to be loaded */
+	/* setup the initial icons to be loaded and pre-load the close icon (is always used for notifications) */
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
 	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
+	_state.loadIcon('Preload', 'close').remove();
 
 	/* build the location and setup the references */
 	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.path, null));
 	if (_state.config.path == '/')
 		document.getElementById('button-parent').classList.add('disabled');
 	else
-		document.getElementById('button-parent').href = _state.encodePath(_state.config.path.substring(0, _state.config.path.lastIndexOf('/')));
+		document.getElementById('button-parent').href = _state.encodeFilePath(_state.config.path.substring(0, _state.config.path.lastIndexOf('/')));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
@@ -1780,8 +1896,8 @@ window.onload = () => {
 
 		/* update the drop animations and add the size constraints */
 		dropZone.style.setProperty('--drop-zone-animations', `${DROP_ZONE_ANIMATION}ms`);
-		if (_state.config.maxUploadSize != 0)
-			document.getElementById('drop-detail').innerText = `(Max. ${_state.formatSize(_state.config.maxUploadSize)})`;
+		if (_state.config.uploadLimit != 0)
+			document.getElementById('drop-detail').innerText = `(Max. ${_state.formatSize(_state.config.uploadLimit)})`;
 
 		/* show and wire up the create button */
 		document.getElementById('create-wrap').classList.remove('hidden');
@@ -1810,4 +1926,7 @@ window.onload = () => {
 	for (const name in __LOAD_PARAMS__?.content ?? {})
 		initList.push({ name, ...__LOAD_PARAMS__.content[name] });
 	_state.updateList(initList);
+
+	/* connect the socket to listen for changes (pretend it not to be initial, if the list was not supplied) */
+	_state.setupSocket(__LOAD_PARAMS__?.content != null);
 }
