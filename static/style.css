@@ -685,7 +685,7 @@
 
 .task .clickable {
 	user-select: none;
-	background-color: #00000020;
+	background-color: #00000018;
 	border: solid 1px black;
 	border-radius: 3px;
 	margin: 4px 0px;

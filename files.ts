@@ -12,6 +12,7 @@ const MAX_RESERVATION_TIME_MS = 5_000;
 const JOB_STATE_TIMEOUT_MS = 180_000;
 const WATCHER_GRACE_MS = 30_000;
 const WATCHER_COALESCE_PERIOD_MS = 2_000;
+const WATCHER_DELETE_CHECK_DELAY_MS = 150;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const NON_ASCII_REGEX = /[^\x20-\x7e]/;
 
@@ -24,12 +25,14 @@ interface DirEntry {
 interface DirListener {
 	ws: Set<mws.ClientSocket>;
 	grace: NodeJS.Timeout | null;
+	delay: NodeJS.Timeout | null;
 	defer: NodeJS.Timeout | null;
 	children: Map<string, libFs.FSWatcher>;
-	close: () => void;
+	close: (reason: string) => Promise<void>;
 	settled: boolean;
 	stamp: number;
-	last: number;
+	lastUpdate: number;
+	lastState: Record<string, DirEntry>;
 }
 interface CopyJobEntry {
 	progress: number;
@@ -1115,48 +1118,54 @@ export class FileShare extends mws.ModuleHandler {
 				if (!stats.isDirectory())
 					throw new Error(`Can only watch directories`);
 				this.info(`Started listening for changes: [${filePath}]`);
+
+				/* on watcher errors, delay the cleanup, as a removal of the directory might result in a race condition,
+				*	where watching fails, but the stats still show the directory to exist, thus resulting in the wrong error */
 				const watcher = libFs.watch(filePath);
+				watcher.on('change', () => triggered());
+				watcher.on('error', (err: any) => cleanup(err, true));
 
 				const entry: DirListener = {
 					grace: null,
+					delay: null,
 					defer: null,
 					stamp: 0,
-					last: Date.now() - WATCHER_COALESCE_PERIOD_MS,
+					lastUpdate: Date.now() - WATCHER_COALESCE_PERIOD_MS,
 					ws: new Set<mws.ClientSocket>(),
 					children: new Map<string, libFs.FSWatcher>(),
-					close: () => {
+					close: async (reason: string): Promise<void> => {
 						delete this.listener[path];
 						entry.settled = true;
 						watcher.close();
-						this.info(`Stopped listening for changes: [${filePath}]`);
+						this.info(`Stopping listening for changes: [${filePath}]`);
 
 						/* close all of the child watchers */
 						for (const child of entry.children.values())
 							child.close();
 						entry.children.clear();
 
-						/* clear the grace and defer timeout, if it exists */
+						/* close any open timers */
 						if (entry.grace != null)
 							clearTimeout(entry.grace);
+						if (entry.delay != null)
+							clearTimeout(entry.delay);
 						if (entry.defer != null)
 							clearTimeout(entry.defer);
+
+						/* close all sockets */
+						const promises: Promise<void>[] = [];
+						for (const ws of entry.ws) {
+							ws.send(reason);
+							promises.push(ws.close());
+						}
+						entry.ws.clear();
+
+						await Promise.all(promises);
 					},
-					settled: false
+					settled: false,
+					lastState: {}
 				};
 				this.listener[path] = entry;
-
-				/* register the watcher listener */
-				const cleanup = (err: any, removed: boolean) => {
-					if (entry.settled) return;
-					this.error(`Error while watching path [${filePath}]: ${err.message}`);
-
-					/* remove the entry and notify all listener */
-					entry.close();
-					for (const ws of entry.ws) {
-						ws.send(removed ? 'removed' : 'error');
-						ws.close();
-					}
-				};
 
 				/* synchronize the child watchers with the given directory state (changes within immediate
 				*	sub-directories modify the listed metadata (item count and modified time) but do not trigger
@@ -1184,10 +1193,41 @@ export class FileShare extends mws.ModuleHandler {
 						} catch (_) { }
 					}
 				};
+				const checkStatesEqual = (a: Record<string, DirEntry>, b: Record<string, DirEntry>): boolean => {
+					const aKeys = Object.keys(a), bKeys = Object.keys(b);
+					if (aKeys.length != bKeys.length)
+						return false;
+
+					for (const key of aKeys) {
+						if (!(key in b))
+							return false;
+						const aEntry = a[key], bEntry = b[key];
+
+						if (aEntry.kind != bEntry.kind || aEntry.modified != bEntry.modified || aEntry.size != bEntry.size)
+							return false;
+					}
+					return true;
+				};
+				const cleanup = (err: any, delay: boolean) => {
+					if (entry.settled) return;
+
+					if (delay && entry.delay == null) {
+						entry.delay = setTimeout(() => cleanup(err, false), WATCHER_DELETE_CHECK_DELAY_MS);
+						return;
+					}
+
+					/* check if the path has been removed */
+					let removed = false;
+					try { removed = !libFs.statSync(filePath).isDirectory(); }
+					catch (_err: any) { removed = (_err.code == 'ENOENT'); }
+
+					this.error(`Error while watching ${removed ? 'removed ' : ''}path [${filePath}]: ${err.message}`);
+					entry.close(removed ? 'removed' : 'error');
+				};
 				const changed = (broadcast: boolean) => {
 					if (entry.settled) return;
 					if (broadcast)
-						entry.last = Date.now(), entry.defer = null;
+						entry.lastUpdate = Date.now(), entry.defer = null;
 					const stamp = ++entry.stamp;
 
 					/* fetch the new directory state to be broadcasted and re-synchronize the child
@@ -1196,29 +1236,32 @@ export class FileShare extends mws.ModuleHandler {
 						if (entry.settled || entry.stamp != stamp)
 							return;
 						syncChildren(list);
-
 						if (!broadcast) return;
+
+						/* check if the state has actually changed (to prevent irrelvant updates, which
+						*	can happen, if a single change is triggered as two consecutive events) */
+						if (checkStatesEqual(list, entry.lastState))
+							return;
+
+						entry.lastState = list;
 						this.trace(`Notifying listener about directory change: [${filePath}]`);
 
 						const state = JSON.stringify(list);
 						for (const ws of entry.ws)
 							ws.send(state);
-					}).catch((err: any) => cleanup(err, (err.code == 'ENOENT')));
+					}).catch((err: any) => cleanup(err, false));
 				};
 				const triggered = () => {
 					if (entry.settled || entry.defer != null)
 						return;
 
 					/* check if the signal should be deferred */
-					const timeSinceLast = Date.now() - entry.last;
+					const timeSinceLast = Date.now() - entry.lastUpdate;
 					if (timeSinceLast < WATCHER_COALESCE_PERIOD_MS)
 						entry.defer = setTimeout(() => changed(true), WATCHER_COALESCE_PERIOD_MS - timeSinceLast);
 					else
 						changed(true);
 				};
-
-				watcher.on('change', () => triggered());
-				watcher.on('error', (err: any) => cleanup(err, false));
 
 				/* trigger a silent change event, to ensure the child waters are configured */
 				changed(false);
@@ -1246,7 +1289,7 @@ export class FileShare extends mws.ModuleHandler {
 
 			/* check if this was the last listener, and the watcher should be closed */
 			if (entry.ws.size == 0 && !entry.settled)
-				entry.grace = setTimeout(() => entry.close(), WATCHER_GRACE_MS);
+				entry.grace = setTimeout(() => entry.close('unused'), WATCHER_GRACE_MS);
 		});
 	}
 	protected override async handleRequest(client: mws.ClientRequest, raw?: mws.Params): Promise<void> {
@@ -1305,15 +1348,8 @@ export class FileShare extends mws.ModuleHandler {
 	protected override async handleStop(): Promise<void> {
 		/* close all sockets and listener (no new sockets can arrive anymore once the stop-handler has started) */
 		const promises: Promise<void>[] = [];
-		for (const path in this.listener) {
-			const entry = this.listener[path];
-
-			entry.close();
-			for (const ws of entry.ws) {
-				ws.send('close');
-				promises.push(ws.close());
-			}
-		}
+		for (const path in this.listener)
+			promises.push(this.listener[path].close('close'));
 
 		/* abort any active jobs */
 		for (const id in this.copyJobs.entries)
