@@ -121,11 +121,7 @@
 	margin-top: 1em;
 	flex: 1;
 	width: 100%;
-	overflow: auto;
-}
-
-.content .window {
-	min-width: max-content;
+	overflow: hidden auto;
 }
 
 .content .row {
@@ -141,18 +137,19 @@
 .content .entry {
 	flex: 1;
 	display: flex;
-	justify-content: center;
+	justify-content: start;
 	align-items: center;
 	text-decoration: none;
 	color: unset;
 	gap: 0.4em;
 	padding: 2px 0;
 	margin-left: 0.75em;
+	overflow: hidden;
 }
 
 .content .row .icon {
 	user-select: none;
-	width: 1.2em;
+	min-width: 1.2em;
 }
 
 .content .row .details {
@@ -160,13 +157,15 @@
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	min-width: 0;
 }
 
 .content .row .details .name {
 	font-family: monospace;
 	font-size: 1.05em;
-	min-width: max-content;
 	padding: 1px;
+	white-space: nowrap;
+	display: flex;
 }
 
 .content .row .details .name:focus {
@@ -183,6 +182,7 @@
 	font-family: monospace;
 	font-size: 0.85em;
 	color: #00000068;
+	white-space: nowrap;
 }
 
 .content .row .option {
