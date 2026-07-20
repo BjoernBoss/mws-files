@@ -132,7 +132,6 @@
 	display: flex;
 	justify-content: center;
 	align-items: center;
-	padding: 2px 0.4em;
 }
 
 .content .row+.row {
@@ -147,6 +146,8 @@
 	text-decoration: none;
 	color: unset;
 	gap: 0.4em;
+	padding: 2px 0;
+	margin-left: 0.75em;
 }
 
 .content .row .icon {
@@ -159,7 +160,6 @@
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	margin-right: 0.75em;
 }
 
 .content .row .details .name {
@@ -186,7 +186,7 @@
 }
 
 .content .row .option {
-	margin: 0 5px;
+	margin: 0 0.75em;
 	padding: 2px;
 	border: 1px solid;
 	border-radius: 3px;

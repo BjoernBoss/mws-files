@@ -2,7 +2,7 @@
 	"name": "@bjoernboss/mws-files",
 	"version": "1.0.0",
 	"type": "module",
-	"description": "Module in TypeScript to share and files and directories - For Modular Web Server",
+	"description": "Module in TypeScript to share and manage files and directories - For Modular Web Server",
 	"license": "BSD-3-Clause",
 	"author": "Bjoern Boss Henrichsen <bjoernbossdev@gmail.com>",
 	"repository": {
