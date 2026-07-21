@@ -1107,8 +1107,6 @@ export class FileShare extends mws.ModuleHandler {
 		client.respondHtml(page);
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
-		client.log(`Subscribe to changes of [${path}]`);
-
 		/* check if the listener needs to be created (path will already be fully expanded) */
 		if (!(path in this.listener)) {
 			const filePath = this.fileStorage(path);
@@ -1276,6 +1274,7 @@ export class FileShare extends mws.ModuleHandler {
 		}
 
 		/* add the web-socket to the listener and check if the closing timeout needs to be stopped */
+		client.log(`Subscribe to changes of [${path}]`);
 		const entry = this.listener[path];
 		entry.ws.add(client);
 		if (entry.grace != null)

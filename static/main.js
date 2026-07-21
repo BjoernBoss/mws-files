@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null } };
+const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -900,8 +900,8 @@ _state.showMoveCopyPicker = (move, callback) => {
 			updateView(target);
 		}).catch((e) => {
 			if (settled) return;
+			clearBusy();
 			_state.pushStaticTask(`Enumerating '${target}' error`, e, false);
-			_state.updateOverlay('pick-overlay', null);
 		});
 	};
 	const updateView = (path) => {
@@ -1003,6 +1003,9 @@ _state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
 	const checkOperation = () => {
 		if (settled) return false; settled = true;
+
+		if (_state.renaming?.element == element)
+			_state.renaming = null;
 		return exists();
 	};
 	const cleanupRename = (result) => {
@@ -1020,6 +1023,13 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		_state.pushStaticText(`'${fileName}' is not a valid name (No: \\ / ? : * " < > | )`, false);
 		return cleanupRename(null);
 	};
+	const updateOperation = (confirm) => {
+		if (!checkOperation()) return;
+		if (confirm)
+			confirmRename();
+		else
+			cleanupRename(null);
+	};
 
 	/* check if the document is not focused, and the rename should just be ignored/silently discarded */
 	if (!document.hasFocus()) {
@@ -1027,19 +1037,17 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		return cleanupRename(null);
 	}
 
-	/* select the entire content of the element */
-	window.getSelection().removeAllRanges();
-	const range = document.createRange();
-	range.selectNodeContents(element);
-	window.getSelection().addRange(range);
-
 	/* temporarily start editing the single element */
+	_state.renaming = { element, click: () => updateOperation(true) };
 	element.contentEditable = true;
 	element.focus({ preventScroll: true });
-	element.onblur = () => {
-		if (checkOperation())
-			confirmRename();
-	}
+	element.onblur = () => updateOperation(true);
+
+	/* select the entire content of the element */
+	const selection = window.getSelection(), range = document.createRange();
+	range.selectNodeContents(element);
+	selection.removeAllRanges();
+	selection.addRange(range);
 
 	/* register the abort handler */
 	element.onkeydown = (e) => {
@@ -1048,16 +1056,13 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		e.stopPropagation();
 		e.preventDefault();
 		if (e.key == 'Escape')
-			cleanupRename();
+			cleanupRename(null);
 		else
 			confirmRename();
 	};
 
 	/* return the abort callback */
-	return () => {
-		if (settled) return; settled = true;
-		cleanupRename(null);
-	};
+	return () => updateOperation(false);
 }
 _state.createListEntry = (params, links) => {
 	const row = buildElement({ class: 'row button' });
@@ -1679,23 +1684,30 @@ _state.copyContent = async (entry, target, printTarget) => {
 		message(true);
 }
 _state.setupSocket = (initial) => {
-	/* check if a previous socket needs to be dropped */
+	/* check if a previous socket needs to be dropped and hide any previous messages or kill any backoff timer */
 	if (_state.socket.ws != null)
 		_state.socket.ws.close();
 	_state.socket.ws = null;
-
-	/* clear the previous backoff timer (as a new connection is to be established) */
+	if (_state.socket.message != null) {
+		_state.socket.message(true);
+		_state.socket.message = null;
+	}
 	if (_state.socket.timer != null)
 		clearTimeout(_state.socket.timer);
 	_state.socket.timer = null;
 
+	/* register the auto-recover callbacks to ensure the socket is reconnected once the page is brought to visibility */
+	document.onvisibilitychange = () => {
+		if (document.visibilityState == 'visible' && _state.socket.ws == null)
+			_state.setupSocket(false);
+	};
+
 	/* reconnection handler */
-	const tryReconnect = (message) => {
+	const tryReconnect = () => {
 		if (_state.socket.ws == null) {
 			_state.socket.count = SOCKET_CONNECTION_RETRIES;
 			_state.setupSocket(false);
 		}
-		message(true);
 	};
 
 	/* try to setup the new socket */
@@ -1716,18 +1728,18 @@ _state.setupSocket = (initial) => {
 			self.close();
 
 			/* check if the directory has been removed (clear the list afterwards to indicate the removal) */
-			const message = _state.pushMessage();
+			_state.socket.message = _state.pushMessage();
 			if (m.data == 'removed') {
-				message('text')('The current directory has been removed!');
+				_state.socket.message('text')('The current directory has been removed!');
 				_state.updateList([]);
 			}
 
 			else if (m.data == 'error')
-				message('status')('Listening for changes: Internal error on server', false);
+				_state.socket.message('status')('Listening for changes: Internal error on server', false);
 			else
-				message('text')('Listening for changes: The server has shut down');
+				_state.socket.message('text')('Listening for changes: The server has shut down');
 
-			message('button')('Try to Reconnect', () => tryReconnect(message));
+			_state.socket.message('button')('Try to Reconnect', () => tryReconnect());
 			return;
 		}
 
@@ -1744,9 +1756,9 @@ _state.setupSocket = (initial) => {
 			_state.socket.ws = null;
 			self.close();
 
-			const message = _state.pushMessage();
-			message('status')('Listening for changes: Malformed update', false);
-			message('button')('Reconnect', () => tryReconnect(message));
+			_state.socket.message = _state.pushMessage();
+			_state.socket.message('status')('Listening for changes: Malformed update', false);
+			_state.socket.message('button')('Reconnect', () => tryReconnect());
 		}
 	};
 	self.onopen = () => {
@@ -1754,7 +1766,8 @@ _state.setupSocket = (initial) => {
 		console.log('Connection established');
 		_state.socket.count = 0;
 
-		/* perform a fetch to ensure the list is up-to-date (not on the initial sync; assume it to be valid; silently ignore errors) */
+		/* perform a fetch to ensure the list is up-to-date (not on the
+		*	initial sync; assume it to be valid; silently ignore errors) */
 		if (initial) return;
 		_state.socket.fetching = true;
 		_state.fs.fetchDirectory(_state.config.path)
@@ -1772,9 +1785,9 @@ _state.setupSocket = (initial) => {
 		_state.socket.ws = null;
 
 		/* notify the user about the lost connection */
-		const message = _state.pushMessage();
-		message('status')('Listening for changes: Connection lost', false);
-		message('button')('Try to Reconnect', () => tryReconnect(message));
+		_state.socket.message = _state.pushMessage();
+		_state.socket.message('status')('Listening for changes: Connection lost', false);
+		_state.socket.message('button')('Try to Reconnect', () => tryReconnect());
 	};
 	self.onerror = () => {
 		if (_state.socket.ws != self) return;
@@ -1784,9 +1797,9 @@ _state.setupSocket = (initial) => {
 		/* check if the connection should be re-tried */
 		if (_state.socket.count < SOCKET_CONNECTION_RETRIES)
 			return _state.socket.timer = setTimeout(() => _state.setupSocket(false), SOCKET_RECONNECT_TIMEOUT);
-		const message = _state.pushMessage();
-		message('status')('Listening for changes: Network error', false);
-		message('button')('Retry', () => tryReconnect(message));
+		_state.socket.message = _state.pushMessage();
+		_state.socket.message('status')('Listening for changes: Network error', false);
+		_state.socket.message('button')('Retry', () => tryReconnect());
 	};
 }
 
@@ -1921,7 +1934,33 @@ window.onload = () => {
 		document.getElementById('create-button').onclick = () => _state.showCreateMenu();
 	}
 
-	/* register all relevant overlay key handler */
+	/* register all mouse capture events for renaming (to prevent clicks from triggering any
+	*	side-effects; clicks, which originate on the renamed entry, will not be forwarded) */
+	lClickSource = null;
+	document.addEventListener('mousedown', (e) => {
+		if (_state.renaming == null) return;
+		if (_state.renaming.element.contains(e.target)) {
+			if (e.button == 0) lClickSource = _state.renaming;
+		} else {
+			if (e.button == 0) lClickSource = null;
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}, true);
+	document.addEventListener('click', (e) => {
+		if (_state.renaming == null) return;
+		e.preventDefault();
+		e.stopPropagation();
+		if (lClickSource != _state.renaming)
+			_state.renaming.click();
+		lClickSource = null;
+	}, true);
+	document.addEventListener('contextmenu', (e) => {
+		if (_state.renaming != null)
+			e.stopPropagation();
+	}, true);
+
+	/* register all relevant overlay key handler (to ensure mouse-events are not passed to children) */
 	for (const name of ['remove', 'menu', 'pick']) {
 		const overlay = document.getElementById(`${name}-overlay`);
 		overlay.children[0].onmousedown = (e) => e.stopPropagation();

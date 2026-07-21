@@ -173,6 +173,7 @@
 	border: solid 1px #404040;
 	border-radius: 4px;
 	padding: 0px;
+	cursor: text;
 }
 
 .content .row .details .info {
@@ -490,6 +491,7 @@
 	border: solid 1px #404040;
 	border-radius: 4px;
 	padding: 0px;
+	cursor: text;
 }
 
 .menu .option .text .main {
