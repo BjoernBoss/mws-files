@@ -1004,8 +1004,10 @@ _state.renameAnyEntry = (element, exists, callback) => {
 	const checkOperation = () => {
 		if (settled) return false; settled = true;
 
-		if (_state.renaming?.element == element)
+		if (_state.renaming?.element == element) {
+			document.getElementById('body').classList.remove('disable-buttons');
 			_state.renaming = null;
+		}
 		return exists();
 	};
 	const cleanupRename = (result) => {
@@ -1037,8 +1039,9 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		return cleanupRename(null);
 	}
 
-	/* temporarily start editing the single element */
+	/* temporarily start editing the single element and hide any button effects */
 	_state.renaming = { element, click: () => updateOperation(true) };
+	document.getElementById('body').classList.add('disable-buttons');
 	element.contentEditable = true;
 	element.focus({ preventScroll: true });
 	element.onblur = () => updateOperation(true);

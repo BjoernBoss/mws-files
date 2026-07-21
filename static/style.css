@@ -21,10 +21,20 @@
 	--drop-zone-animations: 200ms;
 }
 
+.main-body a {
+	text-decoration: none;
+	cursor: unset;
+	color: unset;
+}
+
 /* buttons support [disabled] and [toggled] */
 .button {
 	transition: all var(--button-animations) ease;
 	cursor: pointer;
+}
+
+.main-body.disable-buttons .button {
+	cursor: default;
 }
 
 .button.disabled {
@@ -37,21 +47,21 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-	.button:not(.disabled):hover:not(:has(.button:hover)) {
+	.main-body:not(.disable-buttons) .button:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000018;
 	}
 
-	.button.toggled:not(.disabled):hover:not(:has(.button:hover)) {
+	.main-body:not(.disable-buttons) .button.toggled:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000058;
 	}
 
 }
 
-.button:not(.disabled):active:not(:has(.button:hover)) {
+.main-body:not(.disable-buttons) .button:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #00000030;
 }
 
-.button.toggled:not(.disabled):active:not(:has(.button:hover)) {
+.main-body:not(.disable-buttons) .button.toggled:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #00000070;
 }
 
@@ -63,11 +73,6 @@
 	flex-direction: row;
 	gap: 0.75em;
 	font-size: 1.3em;
-}
-
-.navigation a {
-	text-decoration: none;
-	color: unset;
 }
 
 .navigation .wrapper {
@@ -139,8 +144,6 @@
 	display: flex;
 	justify-content: start;
 	align-items: center;
-	text-decoration: none;
-	color: unset;
 	gap: 0.4em;
 	padding: 2px 0;
 	margin-left: 0.75em;
@@ -200,13 +203,13 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-	.content .row .option.button:not(.disabled):hover:not(:has(.button:hover)) {
+	.main-body:not(.disable-buttons) .content .row .option.button:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #00000060;
 		color: #e0e0e0;
 	}
 }
 
-.content .row .option.button:not(.disabled):active:not(:has(.button:hover)) {
+.main-body:not(.disable-buttons) .content .row .option.button:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #00000080;
 	color: #ffffff;
 }
@@ -244,7 +247,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-	.modify:hover {
+	.main-body:not(.disable-buttons) .modify:hover {
 		box-shadow: #909090 3.5px 3.5px 3.5px;
 	}
 }
@@ -522,13 +525,13 @@
 }
 
 @media (hover: hover)and (pointer: fine) {
-	.menu .option.delete:not(.disabled):hover:not(:has(.button:hover)) {
+	.main-body:not(.disable-buttons) .menu .option.delete:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #d04040;
 		color: #e0e0e0;
 	}
 }
 
-.menu .option.delete:not(.disabled):active:not(:has(.button:hover)) {
+.main-body:not(.disable-buttons) .menu .option.delete:not(.disabled):active:not(:has(.button:hover)) {
 	background-color: #b03030;
 	color: #ffffff;
 }
