@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, batchState: { active: 0, waiting: null, resolver: null }, busy: 0, socket: { ws: null, count: 0, timer: null } };
+const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null } };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -249,8 +249,10 @@ _state.fs = {
 		});
 	}
 }
-_state.batch = async (task) => {
-	const batch = _state.batchState;
+_state.batch = async (batch, task) => {
+	/* check if this is the initial batch and initialize the state */
+	if (batch.active == null)
+		batch.active = 0, batch.waiting = null, batch.resolver = null;
 
 	/* wait for space in the queue */
 	while (batch.active >= FILE_OPERATION_BATCH_SIZE) {
@@ -859,7 +861,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	const fetched = { [_state.config.path]: baseList.sort() };
 
 	/* setup helper functions for the dialog */
-	let settled = false, busyTimer = null, cancelTask = () => { };
+	let settled = false, busyTimer = null, cancelTask = () => { }, batchState = {};
 	const markAsBusy = () => {
 		busyTimer = setTimeout(() => {
 			if (settled) return;
@@ -881,7 +883,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		markAsBusy();
 
 		/* fetch the directory state from the server */
-		_state.batch(() => {
+		_state.batch(batchState, () => {
 			if (settled) return Promise.resolve();
 			return _state.fs.fetchDirectory(target);
 		}).then((json) => {
@@ -1164,7 +1166,7 @@ _state.createDirectory = (element, path, callback) => {
 			const update = message('status');
 			update('Creating...');
 
-			_state.batch(() => _state.fs.makeDirectory(fullPath, false, null))
+			_state.fs.makeDirectory(fullPath, false, null)
 				.then(() => {
 					update('Directory created!', true);
 					message();
@@ -1295,42 +1297,48 @@ _state.uploadContent = async (list, what) => {
 		return success;
 	};
 
-	/* iterate over the list and collect the uploads (shared batching across all remote operations) */
-	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
+	/* iterate over the list and collect the uploads */
+	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0, batchState = {};
 	for (const entry of totalList) {
-		entry.promise = _state.batch(async () => {
+		entry.promise = (async () => {
 			let success = false;
 
-			/* check if the entry has a parent, which failed (mark the object as
-			*	skipped; not if the operation as a whole has already failed) */
-			if (entry.parent != null && !await totalList[entry.parent].promise) {
-				if (totalFailed > FILE_MAX_FAILURES)
-					return false;
-				++totalSkipped;
-			}
-
-			/* perform the actual upload, unless the operation has already failed, in which
-			*	case nothing more will be performed (i.e. just silently skip the task) */
-			else if (totalFailed > FILE_MAX_FAILURES)
+			/* await the parent (before batching to ensure it does not consume a batch-slot) */
+			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
+			if (totalFailed > FILE_MAX_FAILURES)
 				return false;
-			else {
-				let result = false;
-				if (entry.kind == 'file')
-					result = await uploadFile(entry);
-				else
-					result = await uploadDirectory(entry.path);
 
-				/* apply the result to the overall counters */
-				if (!result)
-					++totalFailed;
-				else
-					success = true;
-			}
+			/* batch the actual operation (to limit the number of parallel operations) */
+			return _state.batch(batchState, async () => {
+				if (failedParent) {
+					if (totalFailed > FILE_MAX_FAILURES)
+						return false;
+					++totalSkipped;
+				}
 
-			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
-			caption(null, `${++totalPerformed}/${totalList.length}`);
-			return success;
-		});
+				/* perform the actual upload, unless the operation has already failed, in which
+				*	case nothing more will be performed (i.e. just silently skip the task) */
+				else if (totalFailed > FILE_MAX_FAILURES)
+					return false;
+				else {
+					let result = false;
+					if (entry.kind == 'file')
+						result = await uploadFile(entry);
+					else
+						result = await uploadDirectory(entry.path);
+
+					/* apply the result to the overall counters */
+					if (!result)
+						++totalFailed;
+					else
+						success = true;
+				}
+
+				/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
+				caption(null, `${++totalPerformed}/${totalList.length}`);
+				return success;
+			});
+		})();
 		promises.push(entry.promise);
 	}
 	await Promise.all(promises);
@@ -1366,7 +1374,7 @@ _state.removeContent = async (entry) => {
 	caption(`Remove '${entry.name}'`);
 
 	/* recursively collect the list of all files and directories to be removed */
-	const totalList = [];
+	const totalList = [], batchState = {};
 	if (entry.kind == 'directory') {
 		const update = message('status');
 		update('Calculating...');
@@ -1377,7 +1385,7 @@ _state.removeContent = async (entry) => {
 
 			/* fetch the content list */
 			let content = null;
-			try { content = await _state.batch(() => _state.fs.fetchDirectory(_state.fullPath(path))); }
+			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(_state.fullPath(path))); }
 			catch (e) {
 				if (!initFailed)
 					update(`Enumerating '${path.substring(1)}' error: ${e}`, false);
@@ -1416,50 +1424,53 @@ _state.removeContent = async (entry) => {
 		totalList.push({ path: `/${entry.name}`, kind: 'file' });
 	caption(null, `0/${totalList.length}`);
 
-	/* iterate over the list and collect the deletions (shared batching across all remote operations) */
+	/* iterate over the list and collect the deletions */
 	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
-		entry.promise = _state.batch(async () => {
-			const update = message('status');
-			update(entry.path.substring(1));
-			let success = false, childrenValid = true;
+		entry.promise = (async () => {
+			let success = false;
 
-			/* check if this is a directory with children, which failed to be removed (mark
-			*	the object as skipped; not if the operation as a whole has already failed) */
+			/* await the children (before batching to ensure it does not consume a batch-slot) */
+			let childrenValid = true;
 			if (entry.kind == 'directory') {
 				for (const index of entry.children)
 					childrenValid = (childrenValid && await totalList[index].promise);
 			}
-			if (!childrenValid) {
-				if (totalFailed > FILE_MAX_FAILURES) {
-					update();
-					return false;
-				}
-				++totalSkipped;
-			}
-
-			/* perform the actual deletion, unless the operation has already failed, in which
-			*	case nothing more will be performed (i.e. just silently skip the task) */
-			else if (totalFailed > FILE_MAX_FAILURES) {
-				update();
+			if (totalFailed > FILE_MAX_FAILURES)
 				return false;
-			}
-			else {
-				try {
-					await _state.fs.remove(_state.fullPath(entry.path), entry.kind);
-					success = true;
-				}
-				catch (e) {
-					_state.pushStaticTask(`Remove '${entry.path.substring(1)}'`, e, false);
-					++totalFailed;
-				}
-			}
 
-			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
-			update();
-			caption(null, `${++totalPerformed}/${totalList.length}`);
-			return success;
-		});
+			/* batch the actual operation (to limit the number of parallel operations) */
+			return _state.batch(batchState, async () => {
+				if (!childrenValid) {
+					if (totalFailed > FILE_MAX_FAILURES)
+						return false;
+					++totalSkipped;
+				}
+
+				/* perform the actual deletion, unless the operation has already failed, in which
+				*	case nothing more will be performed (i.e. just silently skip the task) */
+				else if (totalFailed > FILE_MAX_FAILURES)
+					return false;
+				else {
+					const update = message('status');
+					update(entry.path.substring(1));
+
+					try {
+						await _state.fs.remove(_state.fullPath(entry.path), entry.kind);
+						success = true;
+					}
+					catch (e) {
+						_state.pushStaticTask(`Remove '${entry.path.substring(1)}'`, e, false);
+						++totalFailed;
+					}
+					update();
+				}
+
+				/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
+				caption(null, `${++totalPerformed}/${totalList.length}`);
+				return success;
+			});
+		})();
 		promises.push(entry.promise);
 	}
 	await Promise.all(promises);
@@ -1496,7 +1507,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 	caption(`Copy '${entry.name}' to '${printTarget}'`);
 
 	/* recursively collect the list of all files and directories to be copied */
-	const totalList = [];
+	const totalList = [], batchState = {};
 	if (entry.kind == 'directory') {
 		const update = message('status');
 		update('Calculating...');
@@ -1511,7 +1522,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 
 			/* fetch the content list */
 			let content = null;
-			try { content = await _state.batch(() => _state.fs.fetchDirectory(_state.fullPath(src))); }
+			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(_state.fullPath(src))); }
 			catch (e) {
 				if (!initFailed)
 					update(`Enumerating '${src.substring(1)}' error: ${e}`, false);
@@ -1604,42 +1615,48 @@ _state.copyContent = async (entry, target, printTarget) => {
 		return success;
 	};
 
-	/* iterate over the list and collect the copying (shared batching across all remote operations) */
+	/* iterate over the list and collect the copying */
 	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
-		entry.promise = _state.batch(async () => {
+		entry.promise = (async () => {
 			let success = false;
 
-			/* check if the entry has a parent, which failed (mark the object as
-			*	skipped; not if the operation as a whole has already failed) */
-			if (entry.parent != null && !await totalList[entry.parent].promise) {
-				if (totalFailed > FILE_MAX_FAILURES)
-					return false;
-				++totalSkipped;
-			}
-
-			/* perform the actual copy, unless the operation has already failed, in which
-			*	case nothing more will be performed (i.e. just silently skip the task) */
-			else if (totalFailed > FILE_MAX_FAILURES)
+			/* await the parent (before batching to ensure it does not consume a batch-slot) */
+			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
+			if (totalFailed > FILE_MAX_FAILURES)
 				return false;
-			else {
-				let result = false;
-				if (entry.kind == 'file')
-					result = await copyFile(entry.size, entry.src, entry.dst, entry.modified);
-				else
-					result = await copyDirectory(entry.src, entry.dst, entry.modified);
 
-				/* apply the result to the overall counters */
-				if (!result)
-					++totalFailed;
-				else
-					success = true;
-			}
+			/* batch the actual operation (to limit the number of parallel operations) */
+			return _state.batch(batchState, async () => {
+				if (failedParent) {
+					if (totalFailed > FILE_MAX_FAILURES)
+						return false;
+					++totalSkipped;
+				}
 
-			/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
-			caption(null, `${++totalPerformed}/${totalList.length}`);
-			return success;
-		});
+				/* perform the actual copy, unless the operation has already failed, in which
+				*	case nothing more will be performed (i.e. just silently skip the task) */
+				else if (totalFailed > FILE_MAX_FAILURES)
+					return false;
+				else {
+					let result = false;
+					if (entry.kind == 'file')
+						result = await copyFile(entry.size, entry.src, entry.dst, entry.modified);
+					else
+						result = await copyDirectory(entry.src, entry.dst, entry.modified);
+
+					/* apply the result to the overall counters */
+					if (!result)
+						++totalFailed;
+					else
+						success = true;
+				}
+
+				/* update the overall task counter (also for skipped tasks, to ensure it always completes) */
+				caption(null, `${++totalPerformed}/${totalList.length}`);
+				return success;
+			});
+		})();
 		promises.push(entry.promise);
 	}
 	await Promise.all(promises);
