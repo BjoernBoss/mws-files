@@ -13,7 +13,6 @@
 	color: #202020;
 	width: 100%;
 	height: 100%;
-	padding: 1em;
 	position: relative;
 	display: flex;
 	flex-direction: column;
@@ -25,6 +24,18 @@
 	text-decoration: none;
 	cursor: unset;
 	color: unset;
+}
+
+.main-body .header {
+	padding: 1em;
+}
+
+.main-body .primary {
+	position: relative;
+	overflow: hidden;
+	padding: 0 1em 1em 1em;
+	width: 100%;
+	flex: 1;
 }
 
 /* buttons support [disabled] and [toggled] */
@@ -121,12 +132,15 @@
 }
 
 .content {
-	padding-top: 1em;
-	border-top: 1px solid #00000030;
-	margin-top: 1em;
-	flex: 1;
 	width: 100%;
+	height: 100%;
+	border-top: 1px solid #00000030;
+	padding-top: 1em;
+}
+
+.content .window {
 	overflow: hidden auto;
+	height: 100%;
 }
 
 .content .row {
@@ -274,7 +288,8 @@
 	position: absolute;
 	width: calc(100% - 2em);
 	height: 0;
-	bottom: 1em;
+	bottom: 0;
+	margin: 1em;
 	z-index: 4;
 	display: flex;
 	flex-direction: column;

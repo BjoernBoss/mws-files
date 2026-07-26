@@ -856,6 +856,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	/* setup helper functions for the dialog */
 	let settled = false, busyTimer = null, cancelTask = () => { }, batchState = {};
 	const markAsBusy = () => {
+		if (busyTimer != null) return;
 		busyTimer = setTimeout(() => {
 			if (settled) return;
 			document.getElementById('pick-busy').classList.remove('hidden');
@@ -1803,25 +1804,36 @@ _state.setupSocket = (initial) => {
 	};
 }
 _state.setupContentView = async (path, content) => {
-	const viewStamp = ++_state.stamp;
-	const viewBusy = document.getElementById('content-busy');
-
-	/* check if the new state needs to be fetched and await its results */
-	if (content == null) {
-		viewBusy.classList.remove('hidden');
-		try { content = await _state.fs.fetchDirectory(path); }
-		catch (e) {
-			viewBusy.classList.add('hidden');
-			return _state.pushStaticTask(`Enumerating '${path}' error`, e, false);
-		}
-	}
-	viewBusy.classList.add('hidden');
-	if (viewStamp != _state.stamp)
+	if (_state.path == path)
 		return;
 
-	/* hide all overlays and update the state and the content list */
-	const itemList = [];
+	/* allocate the next view stamp and hide the overlays */
+	const viewStamp = ++_state.stamp;
 	_state.hideOverlays();
+
+	/* check if the new state needs to be fetched and await its results */
+	const busyView = document.getElementById('content-busy');
+	if (content == null) {
+		const busyTimer = setTimeout(() => busyView.classList.remove('hidden'), DELAY_UNTIL_SPINNER);
+
+		/* fetch the new content and check if it worked */
+		try { content = await _state.fs.fetchDirectory(path); }
+		catch (e) {
+			if (_state.stamp == viewStamp)
+				busyView.classList.add('hidden');
+			clearTimeout(busyTimer);
+			return _state.pushStaticTask(`Enumerating '${path}' error`, e, false);
+		}
+
+		/* clear the timeout, in case it has not yet fired */
+		clearTimeout(busyTimer);
+	}
+	if (viewStamp != _state.stamp)
+		return;
+	busyView.classList.add('hidden');
+
+	/* update the state and the content list */
+	const itemList = [];
 	_state.path = path;
 	for (const name in content)
 		itemList.push({ name, ...content[name] });
@@ -1829,9 +1841,7 @@ _state.setupContentView = async (path, content) => {
 
 	/* setup the top navigation references and location view */
 	const navigation = document.getElementById('navigation'), parent = document.getElementById('button-parent');
-	while (navigation.children.length > 1)
-		navigation.lastChild.remove();
-	navigation.appendChild(_state.makeLocation(_state.path, null), null);
+	navigation.replaceChild(_state.makeLocation(_state.path, null), navigation.children[1]);
 	if (_state.path == '/') {
 		parent.classList.add('disabled');
 		parent.href = '';
@@ -1863,10 +1873,11 @@ window.onload = () => {
 		return "keep";
 	};
 
-	/* setup the initial icons to be loaded and pre-load the close icon (is always used for notifications) */
+	/* setup the initial icons to be loaded, pre-load the close icon (is always used for notifications), and make the initial empty location */
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
 	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('navigation').appendChild(_state.makeLocation('/', () => { }));
 	_state.loadIcon('Preload', 'close').remove();
 
 	/* register the drag-and-drop handlers for the UI */
