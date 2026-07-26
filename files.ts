@@ -400,6 +400,8 @@ class Zipper {
  *	Parameter are created by merging the handler-params as Params with the default parameter.
  *	The properties decide whether or not a given client has access to the
  *	corresponding abilities (otherwise results in 403), or how the module should behave.
+ *	Note: Params should be the same for any request of a given client into a common rebase path,
+ *		as the frontend will use the parameter for any path operations within the sub-tree.
  */
 export interface Params {
 	/** connection is allowed to access content (default: false) */
@@ -427,6 +429,8 @@ export interface Params {
  *
  *	All paths in the url or http header use URI encoding for the components, while preserving '/'.
  *	All paths in json format are not encoded.
+ *	Note: Endpoints should be the same for any request of a given client into a common rebase path,
+ *		as the frontend will use the endpoints for any path operations within the sub-tree.
  */
 export const Endpoints = {
 	/** directory containing static assets (sparsely used) */
@@ -1018,16 +1022,16 @@ export class FileShare extends mws.ModuleHandler {
 					return client.respondInternalError(`Root [${filePath}] error: ${err.message}`);
 				}
 
-				/* check if the directory should be served in raw */
-				if (client.url.searchParams.get('raw') == 'true')
-					return client.respondJson(list, { headers });
-
-				/* check if the directory is to be downloaded and otherwise create the directory view */
+				/* check if the directory is to be downloaded */
 				if (client.url.searchParams.get('download') == 'true') {
 					const [_, name] = mws.splitFileName(path);
 					headers['Content-Disposition'] = makeContentDisposition(`${name == '' ? 'directory' : name}.zip`);
 					return this.handleDownload(client, filePath, headers, list);
 				}
+
+				/* check if the directory should be served in raw and otherwise create the directory view */
+				if (client.url.searchParams.get('raw') == 'true')
+					return client.respondJson(list, { headers });
 				return this.buildView(client, path, list, params);
 			} catch (err: any) {
 				if (err.code == 'ENOENT')

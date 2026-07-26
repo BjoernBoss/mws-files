@@ -70,6 +70,10 @@ The directory view is an elaborate single-page browser frontend, built entirely 
 - The listing is updated optimistically after each successful operation, without re-fetching the directory, as this will be reported through the change-listener.
 - Navigating away is guarded by a confirmation prompt while operations are still running.
 
+### State Caching
+
+For any client, all requests, which reach the same rebase, should have the same `Params` and `Endpoints` mappings. The frontend caches the endpoints, and parameter, and will re-use the assumptions for any sub-path within its `rebase` confinement. Dynamic `Params` or `Endpoints` for one client, depending on the accessed directory, may result unexpected or unintended assumptions and behavior of the frontend.
+
 ## Parameters
 
 The `Params` object controls module behavior and access. All fields are optional:
@@ -111,8 +115,8 @@ Every response of the `/files` endpoint carries a `Kind` header (`file` or `dire
 
 ### Reading (GET)
 
-- A file is served directly (range requests and content encoding are handled by the framework); `download=true` adds a `Content-Disposition: attachment` header (the filename is given as RFC 8187 `filename*`, with an alternative ascii `filename` fallback).
-- A directory is served as the interactive HTML browser view by default. With `raw=true` the JSON listing is returned instead, and with `download=true` the directory is streamed as a ZIP archive (`{name}.zip`).
+- A file is served directly (range requests and content encoding are handled by the framework); `download=true` adds a `Content-Disposition: attachment` header (the filename is given as `filename*`, with an alternative ascii `filename` fallback).
+- A directory is served as the interactive HTML browser view by default. With `download=true` the directory is streamed as a ZIP archive (`{name}.zip`), and with `raw=true` the JSON listing is returned instead.
 
 The JSON listing maps entry names to their metadata:
 

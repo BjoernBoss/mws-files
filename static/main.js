@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null }, renaming: null };
+const _state = { stamp: 0, path: '', list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -282,7 +282,7 @@ _state.batch = async (batch, task) => {
 	}
 }
 _state.fullPath = (...paths) => {
-	return buildPath(_state.config.path, ...paths);
+	return buildPath(_state.path, ...paths);
 }
 _state.encodeFilePath = (path) => {
 	return buildPath(_state.config.files, buildEncoded(path));
@@ -669,7 +669,7 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(false, (path) => {
 				if (!validateEntry(false)) return;
-				if (path != _state.config.path)
+				if (path != _state.path)
 					return _state.copyContent(entry, buildPath(path, entry.name), path);
 
 				/* find the temporary name to be used */
@@ -808,17 +808,10 @@ _state.showCreateMenu = () => {
 		_state.updateList(null);
 
 		/* start editing the new element */
-		_state.createDirectory(entry.html.name, _state.config.path, (promise) => {
+		_state.createDirectory(entry.html.name, _state.path, (promise) => {
 			entry.html.row.remove();
 			--_state.fakeEntries;
 			_state.updateList(null);
-			if (promise == null) return;
-
-			/* add the entry preemtively to the list (ensure that a new list is created) */
-			promise.then((fileName) => {
-				if (_state.list.findIndex((v) => v.name == fileName) < 0)
-					_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: Date.now() }]));
-			}).catch(() => { });
 		});
 	};
 	content.children[1].onclick = () => {
@@ -858,7 +851,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		if (temp.kind == 'directory')
 			baseList.push(temp.name);
 	}
-	const fetched = { [_state.config.path]: baseList.sort() };
+	const fetched = { [_state.path]: baseList.sort() };
 
 	/* setup helper functions for the dialog */
 	let settled = false, busyTimer = null, cancelTask = () => { }, batchState = {};
@@ -908,7 +901,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		const directories = fetched[path];
 
 		/* update the confirmation button (clear the handler while disabled) */
-		const disabled = (move && path == _state.config.path);
+		const disabled = (move && path == _state.path);
 		if (disabled)
 			confirm.classList.add('disabled');
 		else
@@ -967,10 +960,6 @@ _state.showMoveCopyPicker = (move, callback) => {
 					fetched[path].push(fileName);
 					fetched[path].sort();
 					updateView(path);
-
-					/* check if it should also be pushed to the root list (ensure that a new list is created) */
-					if (path == _state.config.path && _state.list.findIndex((v) => v.name == fileName) < 0)
-						_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: Date.now() }]));
 				}).catch(() => {
 					if (settled) return;
 					clearBusy();
@@ -980,7 +969,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 	};
 
 	/* construct the initial list and show the actual menu */
-	updateView(_state.config.path);
+	updateView(_state.path);
 	_state.updateOverlay('pick-overlay', () => {
 		settled = true;
 		cancelTask();
@@ -1170,7 +1159,7 @@ _state.createDirectory = (element, path, callback) => {
 		const fullPath = buildPath(path, fileName);
 		callback(new Promise((resolve, reject) => {
 			const message = _state.pushMessage();
-			message('text')(`Create '${path == _state.config.path ? fileName : fullPath}'`);
+			message('text')(`Create '${path == _state.path ? fileName : fullPath}'`);
 			const update = message('status');
 			update('Creating...');
 
@@ -1178,6 +1167,10 @@ _state.createDirectory = (element, path, callback) => {
 				.then(() => {
 					update('Directory created!', true);
 					message();
+
+					/* check if it should also be pushed to the root list (ensure that a new list is created) */
+					if (_state.path == path && _state.list.findIndex((v) => v.name == fileName) < 0)
+						_state.updateList(_state.list.concat([{ name: fileName, kind: 'directory', size: 0, modified: Date.now() }]));
 					resolve(fileName);
 				})
 				.catch((e) => {
@@ -1192,6 +1185,7 @@ _state.uploadContent = async (list, what) => {
 		return;
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
+	const basePath = _state.path;
 
 	/* mark the state as busy */
 	++_state.busy;
@@ -1263,7 +1257,7 @@ _state.uploadContent = async (list, what) => {
 		/* try to perform the actual upload */
 		let success = false, progressed = false;
 		try {
-			await _state.fs.upload(_state.fullPath(file.path), (p) => {
+			await _state.fs.upload(buildPath(basePath, file.path), (p) => {
 				if ((p <= 0 || p >= 1) && !progressed) return;
 				progressed = true;
 				update(null, p);
@@ -1272,7 +1266,7 @@ _state.uploadContent = async (list, what) => {
 
 			/* add the entry preemtively to the list (ensure that a new list is created) */
 			const name = file.path.substring(file.path.lastIndexOf('/') + 1);
-			if (file.path.length == name.length + 1)
+			if (file.path == _state.fullPath(name) && _state.list.findIndex((v) => v.name == name) < 0)
 				_state.updateList(_state.list.concat([{ name, kind: 'file', size: file.size, modified: file.file.lastModified }]));
 		}
 		catch (e) {
@@ -1289,12 +1283,12 @@ _state.uploadContent = async (list, what) => {
 		/* try to create the new directory */
 		let success = false;
 		try {
-			await _state.fs.makeDirectory(_state.fullPath(path), true, null);
+			await _state.fs.makeDirectory(buildPath(basePath, path), true, null);
 			success = true;
 
 			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
 			const name = path.substring(path.lastIndexOf('/') + 1);
-			if (path.length == name.length + 1)
+			if (path == _state.fullPath(name) && _state.list.findIndex((v) => v.name == name) < 0)
 				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified: Date.now() }]));
 		}
 		catch (e) {
@@ -1372,6 +1366,7 @@ _state.removeContent = async (entry) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
 	console.log(`Removing [${_state.fullPath(entry.name)}]...`);
+	const basePath = _state.path;
 
 	/* mark the state as busy */
 	++_state.busy;
@@ -1393,7 +1388,7 @@ _state.removeContent = async (entry) => {
 
 			/* fetch the content list */
 			let content = null;
-			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(_state.fullPath(path))); }
+			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, path))); }
 			catch (e) {
 				if (!initFailed)
 					update(`Enumerating '${path.substring(1)}' error: ${e}`, false);
@@ -1464,7 +1459,7 @@ _state.removeContent = async (entry) => {
 					update(entry.path.substring(1));
 
 					try {
-						await _state.fs.remove(_state.fullPath(entry.path), entry.kind);
+						await _state.fs.remove(buildPath(basePath, entry.path), entry.kind);
 						success = true;
 					}
 					catch (e) {
@@ -1492,7 +1487,8 @@ _state.removeContent = async (entry) => {
 	else if (totalFailed > 0)
 		message('status')(`Failed to delete ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
 	else {
-		_state.updateList(_state.list.filter((value) => value.name != entry.name));
+		if (_state.path == basePath)
+			_state.updateList(_state.list.filter((value) => value.name != entry.name));
 		message('status')('Successfully removed!', true);
 		message();
 	}
@@ -1505,6 +1501,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
 	console.log(`Copying [${_state.fullPath(entry.name)}] to [${target}]...`);
+	const basePath = _state.path;
 
 	/* mark the state as busy */
 	++_state.busy;
@@ -1530,7 +1527,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 
 			/* fetch the content list */
 			let content = null;
-			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(_state.fullPath(src))); }
+			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, src))); }
 			catch (e) {
 				if (!initFailed)
 					update(`Enumerating '${src.substring(1)}' error: ${e}`, false);
@@ -1580,7 +1577,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 		/* try to perform the actual copy */
 		let success = false, progressed = false;
 		try {
-			await _state.fs.copy(_state.fullPath(src), dst, (p) => {
+			await _state.fs.copy(buildPath(basePath, src), dst, (p) => {
 				if ((p <= 0 || p >= 1) && !progressed) return;
 				progressed = true;
 				update(null, p);
@@ -1590,7 +1587,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 			/* add the entry preemtively to the list (ensure that a new list is created; the
 			*	copy preserves the modified-time of the source) */
 			const name = dst.substring(dst.lastIndexOf('/') + 1);
-			if (dst == _state.fullPath(name))
+			if (dst == _state.fullPath(name) && _state.list.findIndex((v) => v.name == name) < 0)
 				_state.updateList(_state.list.concat([{ name, kind: 'file', size: fileSize, modified }]));
 		}
 		catch (e) {
@@ -1612,7 +1609,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 
 			/* check if this is a root directory and preemtively add the entry to the list (ensure that a new list is created) */
 			const name = dst.substring(dst.lastIndexOf('/') + 1);
-			if (dst == _state.fullPath(name))
+			if (dst == _state.fullPath(name) && _state.list.findIndex((v) => v.name == name) < 0)
 				_state.updateList(_state.list.concat([{ name, kind: 'directory', size: 0, modified }]));
 		}
 		catch (e) {
@@ -1714,7 +1711,7 @@ _state.setupSocket = (initial) => {
 	};
 
 	/* try to setup the new socket */
-	const path = buildPath(_state.config.sockets, buildEncoded(_state.config.path));
+	const path = buildPath(_state.config.sockets, buildEncoded(_state.path));
 	const self = new WebSocket(`${location.protocol == 'https:' ? 'wss' : 'ws'}://${location.host}${path}`);
 	_state.socket.ws = self;
 	++_state.socket.count;
@@ -1773,7 +1770,7 @@ _state.setupSocket = (initial) => {
 		*	initial sync; assume it to be valid; silently ignore errors) */
 		if (initial) return;
 		_state.socket.fetching = true;
-		_state.fs.fetchDirectory(_state.config.path)
+		_state.fs.fetchDirectory(_state.path)
 			.then((content) => {
 				const list = [];
 				for (const name in content)
@@ -1805,13 +1802,54 @@ _state.setupSocket = (initial) => {
 		_state.socket.message('button')('Retry', () => tryReconnect());
 	};
 }
+_state.setupContentView = async (path, content) => {
+	const viewStamp = ++_state.stamp;
+	const viewBusy = document.getElementById('content-busy');
+
+	/* check if the new state needs to be fetched and await its results */
+	if (content == null) {
+		viewBusy.classList.remove('hidden');
+		try { content = await _state.fs.fetchDirectory(path); }
+		catch (e) {
+			viewBusy.classList.add('hidden');
+			return _state.pushStaticTask(`Enumerating '${path}' error`, e, false);
+		}
+	}
+	viewBusy.classList.add('hidden');
+	if (viewStamp != _state.stamp)
+		return;
+
+	/* hide all overlays and update the state and the content list */
+	const itemList = [];
+	_state.hideOverlays();
+	_state.path = path;
+	for (const name in content)
+		itemList.push({ name, ...content[name] });
+	_state.updateList(itemList);
+
+	/* setup the top navigation references and location view */
+	const navigation = document.getElementById('navigation'), parent = document.getElementById('button-parent');
+	while (navigation.children.length > 1)
+		navigation.lastChild.remove();
+	navigation.appendChild(_state.makeLocation(_state.path, null), null);
+	if (_state.path == '/') {
+		parent.classList.add('disabled');
+		parent.href = '';
+	}
+	else {
+		parent.classList.remove('disabled');
+		parent.href = _state.encodeFilePath(_state.path.substring(0, _state.path.lastIndexOf('/')));
+	}
+
+	/* connect the socket to listen for changes */
+	_state.setupSocket(true);
+}
 
 window.onload = () => {
 	/* parse the initial configuration */
 	_state.config.delete = (__LOAD_PARAMS__?.delete ?? false);
 	_state.config.upload = (__LOAD_PARAMS__?.upload ?? false);
 	_state.config.uploadLimit = (__LOAD_PARAMS__?.uploadLimit ?? 0);
-	_state.config.path = (__LOAD_PARAMS__?.path ?? '/');
 	_state.config.files = (__LOAD_PARAMS__?.files ?? '/bad_path');
 	_state.config.jobs = (__LOAD_PARAMS__?.jobs ?? '/bad_path');
 	_state.config.sockets = (__LOAD_PARAMS__?.sockets ?? '/bad_path');
@@ -1830,13 +1868,6 @@ window.onload = () => {
 	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
 	_state.loadIcon('Preload', 'close').remove();
-
-	/* build the location and setup the references */
-	document.getElementById('navigation').appendChild(_state.makeLocation(_state.config.path, null));
-	if (_state.config.path == '/')
-		document.getElementById('button-parent').classList.add('disabled');
-	else
-		document.getElementById('button-parent').href = _state.encodeFilePath(_state.config.path.substring(0, _state.config.path.lastIndexOf('/')));
 
 	/* register the drag-and-drop handlers for the UI */
 	if (_state.config.upload) {
@@ -1980,12 +2011,6 @@ window.onload = () => {
 			_state.hideOverlays();
 	};
 
-	/* load the initial content list */
-	const initList = [];
-	for (const name in __LOAD_PARAMS__?.content ?? {})
-		initList.push({ name, ...__LOAD_PARAMS__.content[name] });
-	_state.updateList(initList);
-
-	/* connect the socket to listen for changes (pretend it not to be initial, if the list was not supplied) */
-	_state.setupSocket(__LOAD_PARAMS__?.content != null);
+	/* setup the content view */
+	_state.setupContentView((__LOAD_PARAMS__?.path ?? '/'), (__LOAD_PARAMS__?.content ?? null));
 }
