@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { stamp: 0, path: '', list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null }, renaming: null };
+const _state = { stamp: 0, path: '', list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -1685,21 +1685,23 @@ _state.copyContent = async (entry, target, printTarget) => {
 		message(true);
 }
 _state.setupSocket = (initial) => {
-	/* check if a previous socket needs to be dropped and hide any previous messages or kill any backoff timer */
+	/* close the previous socket and reset the backoff timers and state */
 	if (_state.socket.ws != null)
 		_state.socket.ws.close();
-	_state.socket.ws = null;
-	if (_state.socket.message != null) {
+	if (_state.socket.message != null)
 		_state.socket.message(true);
-		_state.socket.message = null;
-	}
 	if (_state.socket.timer != null)
 		clearTimeout(_state.socket.timer);
+
+	/* reset the socket state */
+	_state.socket.ws = null;
+	_state.socket.message = null;
 	_state.socket.timer = null;
+	_state.socket.hiddenAutoReconnect = false;
 
 	/* register the auto-recover callbacks to ensure the socket is reconnected once the page is brought to visibility */
 	document.onvisibilitychange = () => {
-		if (document.visibilityState == 'visible' && _state.socket.ws == null)
+		if (!document.hidden && _state.socket.hiddenAutoReconnect)
 			_state.setupSocket(false);
 	};
 
@@ -1719,6 +1721,24 @@ _state.setupSocket = (initial) => {
 	console.log(`Connecting to listen for changes on [${self.url}]...`);
 
 	/* register the socket callback */
+	self.onopen = () => {
+		if (_state.socket.ws != self) return;
+		console.log('Connection established');
+		_state.socket.count = 0;
+
+		/* perform a fetch to ensure the list is up-to-date (not on the
+		*	initial sync; assume it to be valid; silently ignore errors) */
+		if (initial) return;
+		_state.socket.fetching = true;
+		_state.fs.fetchDirectory(_state.path)
+			.then((content) => {
+				const list = [];
+				for (const name in content)
+					list.push({ name, ...content[name] });
+				_state.updateList(list);
+			})
+			.catch((e) => console.log(`Failed to fetch directory content: ${e}`));
+	};
 	self.onmessage = (m) => {
 		if (_state.socket.ws != self) return;
 
@@ -1740,7 +1760,7 @@ _state.setupSocket = (initial) => {
 			else
 				_state.socket.message('text')('Listening for changes: The server has shut down');
 
-			_state.socket.message('button')('Try to Reconnect', () => tryReconnect());
+			_state.socket.message('button')('Try to Reconnect', tryReconnect);
 			return;
 		}
 
@@ -1759,48 +1779,44 @@ _state.setupSocket = (initial) => {
 
 			_state.socket.message = _state.pushMessage();
 			_state.socket.message('status')('Listening for changes: Malformed update', false);
-			_state.socket.message('button')('Reconnect', () => tryReconnect());
+			_state.socket.message('button')('Reconnect', tryReconnect);
 		}
-	};
-	self.onopen = () => {
-		if (_state.socket.ws != self) return;
-		console.log('Connection established');
-		_state.socket.count = 0;
-
-		/* perform a fetch to ensure the list is up-to-date (not on the
-		*	initial sync; assume it to be valid; silently ignore errors) */
-		if (initial) return;
-		_state.socket.fetching = true;
-		_state.fs.fetchDirectory(_state.path)
-			.then((content) => {
-				const list = [];
-				for (const name in content)
-					list.push({ name, ...content[name] });
-				_state.updateList(list);
-			})
-			.catch((e) => console.log(`Failed to fetch directory content: ${e}`));
 	};
 	self.onclose = () => {
 		if (_state.socket.ws != self) return;
 		console.log('Connection to remote side lost');
 		_state.socket.ws = null;
 
+		/* check if the page is hidden, in which case the error can silently
+		*	be ignored (the change to visible will silently reconnect it) */
+		if (document.hidden) {
+			_state.socket.hiddenAutoReconnect = true;
+			return;
+		}
+
 		/* notify the user about the lost connection */
 		_state.socket.message = _state.pushMessage();
 		_state.socket.message('status')('Listening for changes: Connection lost', false);
-		_state.socket.message('button')('Try to Reconnect', () => tryReconnect());
+		_state.socket.message('button')('Try to Reconnect', tryReconnect);
 	};
 	self.onerror = () => {
 		if (_state.socket.ws != self) return;
 		console.log(`Socket connection error`);
 		_state.socket.ws = null;
 
+		/* check if the page is hidden, in which case the error can silently
+		*	be ignored (the change to visible will silently reconnect it) */
+		if (document.hidden) {
+			_state.socket.hiddenAutoReconnect = true;
+			return;
+		}
+
 		/* check if the connection should be re-tried */
 		if (_state.socket.count < SOCKET_CONNECTION_RETRIES)
 			return _state.socket.timer = setTimeout(() => _state.setupSocket(false), SOCKET_RECONNECT_TIMEOUT);
 		_state.socket.message = _state.pushMessage();
 		_state.socket.message('status')('Listening for changes: Network error', false);
-		_state.socket.message('button')('Retry', () => tryReconnect());
+		_state.socket.message('button')('Retry', tryReconnect);
 	};
 }
 _state.setupContentView = async (path, content, update) => {
@@ -1839,7 +1855,7 @@ _state.setupContentView = async (path, content, update) => {
 
 	/* update the current path, title, and history to contain the newly visited page */
 	_state.path = path;
-	document.title = (path == '/' ? 'Root Directory' : `Directory: ${path.substring(path.indexOf('/') + 1)}`);
+	document.title = (path == '/' ? 'Root Directory' : `Directory: ${path.substring(path.lastIndexOf('/') + 1)}`);
 	const thisPathUrl = `${window.location.protocol}//${window.location.host}${_state.encodeFilePath(_state.path)}`;
 	if (update)
 		window.history.replaceState(_state.path, '', thisPathUrl);
@@ -1886,7 +1902,7 @@ window.onload = () => {
 		return "keep";
 	};
 
-	/* register the 'previous' page detection */
+	/* register page moving detection */
 	window.addEventListener('popstate', (e) => {
 		if (typeof e.state == 'string')
 			_state.setupContentView(e.state, null, true);
