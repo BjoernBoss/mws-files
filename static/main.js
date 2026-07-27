@@ -1803,7 +1803,7 @@ _state.setupSocket = (initial) => {
 		_state.socket.message('button')('Retry', () => tryReconnect());
 	};
 }
-_state.setupContentView = async (path, content) => {
+_state.setupContentView = async (path, content, update) => {
 	if (_state.path == path)
 		return;
 
@@ -1822,19 +1822,32 @@ _state.setupContentView = async (path, content) => {
 			if (_state.stamp == viewStamp)
 				busyView.classList.add('hidden');
 			clearTimeout(busyTimer);
-			return _state.pushStaticTask(`Enumerating '${path}' error`, e, false);
+			return _state.pushStaticTask(`Opening '${path}' error`, e, false);
 		}
 
 		/* clear the timeout, in case it has not yet fired */
 		clearTimeout(busyTimer);
 	}
+
+	/* check if the state is still in-order to be applied */
 	if (viewStamp != _state.stamp)
 		return;
 	busyView.classList.add('hidden');
+	if (_state.path == path)
+		return;
+	_state.hideOverlays();
 
-	/* update the state and the content list */
-	const itemList = [];
+	/* update the current path, title, and history to contain the newly visited page */
 	_state.path = path;
+	document.title = (path == '/' ? 'Root Directory' : `Directory: ${path.substring(path.indexOf('/') + 1)}`);
+	const thisPathUrl = `${window.location.protocol}//${window.location.host}${_state.encodeFilePath(_state.path)}`;
+	if (update)
+		window.history.replaceState(_state.path, '', thisPathUrl);
+	else
+		window.history.pushState(_state.path, '', thisPathUrl);
+
+	/* update the state list */
+	const itemList = [];
 	for (const name in content)
 		itemList.push({ name, ...content[name] });
 	_state.updateList(itemList);
@@ -1866,12 +1879,22 @@ window.onload = () => {
 	_state.config.icons = (__LOAD_PARAMS__?.icons ?? {});
 
 	/* register the busy alert */
-	window.onbeforeunload = function (e) {
+	window.onbeforeunload = (e) => {
 		if (_state.busy == 0)
 			return null;
 		e.preventDefault();
 		return "keep";
 	};
+
+	/* register the 'previous' page detection */
+	window.addEventListener('popstate', (e) => {
+		if (typeof e.state == 'string')
+			_state.setupContentView(e.state, null, true);
+		else {
+			_state.setupContentView('/', null, false);
+			_state.pushStaticText('Error returning to previous state', false);
+		}
+	});
 
 	/* setup the initial icons to be loaded, pre-load the close icon (is always used for notifications), and make the initial empty location */
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
@@ -2023,5 +2046,5 @@ window.onload = () => {
 	};
 
 	/* setup the content view */
-	_state.setupContentView((__LOAD_PARAMS__?.path ?? '/'), (__LOAD_PARAMS__?.content ?? null));
+	_state.setupContentView((__LOAD_PARAMS__?.path ?? '/'), (__LOAD_PARAMS__?.content ?? null), true);
 }
