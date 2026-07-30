@@ -1841,28 +1841,38 @@ _state.setupSocket = (initial) => {
 		_state.socket.message('button')('Retry', tryReconnect);
 	};
 }
+_state.setupPageContext = (update) => {
+	/* update the history to contain the newly visited page */
+	const thisPathUrl = `${window.location.protocol}//${window.location.host}${_state.encodeFilePath(_state.path)}`;
+	if (update)
+		window.history.replaceState(_state.path, '', thisPathUrl);
+	else
+		window.history.pushState(_state.path, '', thisPathUrl);
+
+	/* update the page title */
+	document.title = (_state.path == '/' ? 'Root Directory' : `Directory: ${_state.path.substring(_state.path.lastIndexOf('/') + 1)}`);
+}
 _state.setupContentView = async (path, content, update) => {
+	/* always update title, as history-navigations might otherwise sometimes get confused */
 	console.log(`Navigating from [${_state.path}] to [${path}]`);
 	if (_state.path == path)
-		return;
+		return _state.setupPageContext(true);
 
 	/* allocate the next view stamp and hide the overlays */
 	const viewStamp = ++_state.stamp;
 	_state.hideOverlays();
 
 	/* check if the new state needs to be fetched and await its results */
-	const busyView = document.getElementById('content-busy');
+	let busyView = document.getElementById('content-busy'), fetchError = null;
 	if (content == null) {
-		const busyTimer = setTimeout(() => busyView.classList.remove('hidden'), DELAY_UNTIL_SPINNER);
+		const busyTimer = setTimeout(() => {
+			if (viewStamp == _state.stamp)
+				busyView.classList.remove('hidden');
+		}, DELAY_UNTIL_SPINNER);
 
-		/* fetch the new content and check if it worked */
+		/* fetch the new content and cache any errors for proper handling */
 		try { content = await _state.fs.fetchDirectory(path); }
-		catch (e) {
-			if (_state.stamp == viewStamp)
-				busyView.classList.add('hidden');
-			clearTimeout(busyTimer);
-			return _state.pushStaticTask(`Opening '${path}' error`, e, false);
-		}
+		catch (e) { fetchError = e; }
 
 		/* clear the timeout, in case it has not yet fired */
 		clearTimeout(busyTimer);
@@ -1873,17 +1883,18 @@ _state.setupContentView = async (path, content, update) => {
 		return;
 	busyView.classList.add('hidden');
 	if (_state.path == path)
-		return;
+		return _state.setupPageContext(true);
 	_state.hideOverlays();
 
-	/* update the current path, title, and history to contain the newly visited page */
-	_state.path = path;
-	document.title = (path == '/' ? 'Root Directory' : `Directory: ${path.substring(path.lastIndexOf('/') + 1)}`);
-	const thisPathUrl = `${window.location.protocol}//${window.location.host}${_state.encodeFilePath(_state.path)}`;
-	if (update)
-		window.history.replaceState(_state.path, '', thisPathUrl);
+	/* check if the path failed to be opened, and the previous path should be kept, and
+	*	otherwise setup the new path and update the history (even in error cases) */
+	if (fetchError == null)
+		_state.path = path;
 	else
-		window.history.pushState(_state.path, '', thisPathUrl);
+		_state.pushStaticTask(`Opening '${path}' error`, fetchError, false);
+	_state.setupPageContext(update || fetchError);
+	if (fetchError != null)
+		return;
 
 	/* update the state list */
 	const itemList = [];
