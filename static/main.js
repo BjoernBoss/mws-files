@@ -139,7 +139,7 @@ _state.fs = {
 		request.onload = () => {
 			if (settled) return; settled = true;
 			if (request.status < 200 || request.status >= 300)
-				return reject('Unexpected server response');
+				return reject(request.responseText ?? 'Unexpected server response');
 			console.log(`File [${path}] uploaded`);
 			resolve();
 		};
@@ -329,20 +329,25 @@ _state.loadIcon = (placeholder, name) => {
 		.catch(() => { element.innerText = placeholder; });
 	return element;
 }
-_state.makeLocation = (path, cb) => {
-	const kind = (cb == null ? 'a' : 'div');
+_state.makeLocation = (path, cb, links, selfDisable) => {
+	const kind = (links ? 'a' : 'div');
 	const location = buildElement({ class: 'wrapper location' });
 
 	/* add the home button */
 	const home = location.appendChild(buildElement({ kind, class: 'button icon', child: _state.loadIcon('Home', 'home') }));
 
 	/* update the logic for home */
-	if (cb == null)
-		home.href = _state.encodeFilePath('/');
-	else if (path == '/')
+	if (path == '/' && selfDisable)
 		home.classList.add('disabled');
-	else
-		home.onclick = () => cb('/');
+	else {
+		if (links)
+			home.href = _state.encodeFilePath('/');
+		home.onclick = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			cb('/');
+		};
+	}
 
 	/* add the buttons for the path components */
 	for (let i = 1, end = 0; i < path.length; i = end + 1) {
@@ -354,12 +359,17 @@ _state.makeLocation = (path, cb) => {
 		const entry = location.appendChild(buildElement({ kind, class: 'button text', text: path.substring(i, end) }));
 
 		/* wire up the button logic */
-		if (cb == null)
-			entry.href = _state.encodeFilePath(path.substring(0, end));
-		else if (end < path.length)
-			entry.onclick = () => cb(path.substring(0, end));
-		else
+		if (end >= path.length && selfDisable)
 			entry.classList.add('disabled');
+		else {
+			if (links)
+				entry.href = _state.encodeFilePath(path.substring(0, end));
+			entry.onclick = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				cb(path.substring(0, end));
+			};
+		}
 	}
 
 	/* register the location listener to ensure the location is scroll end-favoring (to preserve
@@ -929,7 +939,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 			document.getElementById('pick-content-empty').classList.add('hidden');
 
 		/* update the navigation and add the create-button */
-		const location = _state.makeLocation(path, (target) => navigateDirectories(target));
+		const location = _state.makeLocation(path, (target) => navigateDirectories(target), false, true);
 		if (navigation.children.length == 1)
 			navigation.insertBefore(location, navigation.children[0]);
 		else
@@ -1061,8 +1071,19 @@ _state.createListEntry = (params, links) => {
 	const row = buildElement({ class: 'row button' });
 
 	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
-	if (links)
-		entry.href = _state.encodeFilePath(_state.fullPath(params.name));
+
+	/* check if the entry should be created as navigation entry (only add the in-place redirections for directories) */
+	if (links) {
+		const entryPath = _state.fullPath(params.name);
+		entry.href = _state.encodeFilePath(entryPath);
+		if (params.kind == 'directory') {
+			entry.onclick = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				_state.setupContentView(entryPath, null, false);
+			};
+		}
+	}
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
 	if (params.kind == 'directory')
@@ -1132,6 +1153,7 @@ _state.updateList = (content) => {
 		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
 		entry.html.row.oncontextmenu = (e) => {
 			e.preventDefault();
+			e.stopPropagation();
 			_state.showEntryMenu(entry);
 		};
 		++next, ++prev;
@@ -1350,7 +1372,7 @@ _state.uploadContent = async (list, what) => {
 	--_state.busy;
 
 	/* log the final status message */
-	if (totalFailed > FILE_MAX_FAILURES)
+	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed uploads (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
 		message('status')(`Failed to upload ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
@@ -1483,7 +1505,7 @@ _state.removeContent = async (entry) => {
 	--_state.busy;
 
 	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created; skipped can only be > 0, if failed is > 0) */
-	if (totalFailed > FILE_MAX_FAILURES)
+	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed deletions (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
 		message('status')(`Failed to delete ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
@@ -1671,7 +1693,7 @@ _state.copyContent = async (entry, target, printTarget) => {
 	--_state.busy;
 
 	/* log the final status message */
-	if (totalFailed > FILE_MAX_FAILURES)
+	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed copies (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
 		message('status')(`Failed to copy ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
@@ -1820,6 +1842,7 @@ _state.setupSocket = (initial) => {
 	};
 }
 _state.setupContentView = async (path, content, update) => {
+	console.log(`Navigating from [${_state.path}] to [${path}]`);
 	if (_state.path == path)
 		return;
 
@@ -1870,14 +1893,24 @@ _state.setupContentView = async (path, content, update) => {
 
 	/* setup the top navigation references and location view */
 	const navigation = document.getElementById('navigation'), parent = document.getElementById('button-parent');
-	navigation.replaceChild(_state.makeLocation(_state.path, null), navigation.children[1]);
+	navigation.replaceChild(_state.makeLocation(_state.path, (path) => _state.setupContentView(path, null, false), true, false), navigation.children[1]);
 	if (_state.path == '/') {
 		parent.classList.add('disabled');
-		parent.href = '';
+		delete parent.href;
+		parent.onclick = null;
 	}
 	else {
+		let parentPath = _state.path.substring(0, _state.path.lastIndexOf('/'));
+		if (parentPath == '')
+			parentPath = '/';
+
 		parent.classList.remove('disabled');
-		parent.href = _state.encodeFilePath(_state.path.substring(0, _state.path.lastIndexOf('/')));
+		parent.href = _state.encodeFilePath(parentPath);
+		parent.onclick = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			_state.setupContentView(parentPath, null, false);
+		};
 	}
 
 	/* connect the socket to listen for changes */
@@ -1916,7 +1949,7 @@ window.onload = () => {
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
 	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
-	document.getElementById('navigation').appendChild(_state.makeLocation('/', () => { }));
+	document.getElementById('navigation').appendChild(_state.makeLocation('/', () => { }, false, false));
 	_state.loadIcon('Preload', 'close').remove();
 
 	/* register the drag-and-drop handlers for the UI */

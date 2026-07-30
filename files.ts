@@ -717,9 +717,11 @@ export class FileShare extends mws.ModuleHandler {
 			return client.respondOk({ message: `File uploaded` });
 		}
 		catch (err: any) {
-			/* in case of 'ENOENT', a 'existing parent' does not make alot of sense (race-condition? => fail) */
-			if (err.code == 'ENOENT' && !await this.checkParentState(client, filePath, parentIsRoot))
+			if (err.code == 'ENOENT') {
+				if (await this.checkParentState(client, filePath, parentIsRoot))
+					client.respondConflict({ message: 'Path removed mid operation' });
 				return;
+			}
 			if (err.code != 'EEXIST')
 				return client.respondInternalError(`Failed to create ${kind} [${filePath}]: ${err.message}`);
 
@@ -809,8 +811,10 @@ export class FileShare extends mws.ModuleHandler {
 					resolver();
 					if (err.code == 'EEXIST')
 						entry.message = 'Path already exists';
+					else if (err.code == 'ENOENT')
+						entry.message = 'Path removed mid operation';
 					else
-						entry.message = 'Internal Server Error';
+						entry.message = 'Internal server error';
 				});
 
 			/* return the newly created job-id */
