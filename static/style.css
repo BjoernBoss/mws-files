@@ -147,6 +147,7 @@
 	display: flex;
 	justify-content: center;
 	align-items: center;
+	border-top: 1px solid transparent;
 }
 
 .content .row+.row {
@@ -489,6 +490,7 @@
 	display: flex;
 	padding: 0 8px;
 	min-height: 2.2em;
+	border-top: 1px solid transparent;
 }
 
 .menu .option+.option {
