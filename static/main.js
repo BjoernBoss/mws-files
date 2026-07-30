@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { stamp: 0, path: '', list: [], fakeEntries: 0, loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
+const _state = { touchLayout: false, stamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -697,15 +697,10 @@ _state.showEntryMenu = (entry) => {
 				const host = document.getElementById('content');
 				host.insertBefore(fakeEntry.html.row, host.children[0]);
 				fakeEntry.html.row.scrollIntoView();
-				++_state.fakeEntries;
-				_state.updateList(null);
 
 				/* start editing the new element */
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
-					--_state.fakeEntries;
-					_state.updateList(null);
-
 					if (fileName != null && validateEntry(false))
 						_state.copyContent(entry, _state.fullPath(fileName), fileName);
 				});
@@ -814,14 +809,10 @@ _state.showCreateMenu = () => {
 		const host = document.getElementById('content');
 		host.insertBefore(entry.html.row, host.children[0]);
 		entry.html.row.scrollIntoView();
-		++_state.fakeEntries;
-		_state.updateList(null);
 
 		/* start editing the new element */
 		_state.createDirectory(entry.html.name, _state.path, (promise) => {
 			entry.html.row.remove();
-			--_state.fakeEntries;
-			_state.updateList(null);
 		});
 	};
 	content.children[1].onclick = () => {
@@ -932,12 +923,6 @@ _state.showMoveCopyPicker = (move, callback) => {
 			content.children[i].onclick = () => navigateDirectories(buildPath(path, directories[i]));
 		}
 
-		/* check if the directory is empty */
-		if (directories.length == 0)
-			document.getElementById('pick-content-empty').classList.remove('hidden');
-		else
-			document.getElementById('pick-content-empty').classList.add('hidden');
-
 		/* update the navigation and add the create-button */
 		const location = _state.makeLocation(path, (target) => navigateDirectories(target), false, true);
 		if (navigation.children.length == 1)
@@ -954,7 +939,6 @@ _state.showMoveCopyPicker = (move, callback) => {
 			fakeEntry.children[0].appendChild(_state.loadIcon('Directory', 'directory'));
 			fakeEntry.children[1].classList.add('path');
 			fakeEntry.scrollIntoView();
-			document.getElementById('pick-content-empty').classList.add('hidden');
 
 			/* try to create the actual directory (cannot have a busy-timer, if the
 			*	promise is valid, as this implies that no cancel-task was called) */
@@ -1109,12 +1093,11 @@ _state.updateList = (content) => {
 			return (a.kind == 'directory' ? -1 : 1);
 		return (a.name < b.name ? -1 : (a.name == b.name ? 0 : 1));
 	};
-	if (content != null)
-		content.sort(compare);
+	content.sort(compare);
 
 	/* iterate over the current list and content list, and synchronize them */
 	let prev = 0, next = 0;
-	if (content != null) while (true) {
+	while (true) {
 		const hasPrev = (prev < _state.list.length), hasNext = (next < content.length);
 		if (!hasPrev && !hasNext)
 			break;
@@ -1158,13 +1141,7 @@ _state.updateList = (content) => {
 		};
 		++next, ++prev;
 	}
-
-	/* check if the list is empty and add the placeholder */
-	if (_state.list.length == 0 && _state.fakeEntries == 0)
-		document.getElementById('content-empty').classList.remove('hidden');
-	else
-		document.getElementById('content-empty').classList.add('hidden');
-	console.log(`content list has been updated to ${_state.list.length + _state.fakeEntries} entries...`);
+	console.log(`content list has been updated to ${_state.list.length} entries...`);
 }
 
 _state.createDirectory = (element, path, callback) => {

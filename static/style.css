@@ -233,10 +233,11 @@
 	color: #808080;
 	width: 100%;
 	text-align: center;
+	display: none;
 }
 
-.content .empty.hidden {
-	display: none;
+.content:has(.window:empty) .empty {
+	display: block;
 }
 
 .modify {
@@ -476,10 +477,11 @@
 	color: #808080;
 	width: 100%;
 	text-align: center;
+	display: none;
 }
 
-.menu .body .empty.hidden {
-	display: none;
+.menu .body .window:has(.list:empty) .empty {
+	display: block;
 }
 
 .menu .option {
@@ -541,7 +543,7 @@
 	color: #d04040;
 }
 
-@media (hover: hover)and (pointer: fine) {
+@media (hover: hover) and (pointer: fine) {
 	.main-body:not(.disable-buttons) .menu .option.delete:not(.disabled):hover:not(:has(.button:hover)) {
 		background-color: #d04040;
 		color: #e0e0e0;
