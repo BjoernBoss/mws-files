@@ -924,11 +924,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		}
 
 		/* update the navigation and add the create-button */
-		const location = _state.makeLocation(path, (target) => navigateDirectories(target), false, true);
-		if (navigation.children.length == 1)
-			navigation.insertBefore(location, navigation.children[0]);
-		else
-			navigation.replaceChild(location, navigation.children[0]);
+		navigation.replaceChild(_state.makeLocation(path, (target) => navigateDirectories(target), false, true), navigation.children[0]);
 		navigation.children[1].onclick = () => {
 			cancelTask();
 			if (settled || busyTimer != null)
@@ -1904,6 +1900,19 @@ _state.setupContentView = async (path, content, update) => {
 	/* connect the socket to listen for changes */
 	_state.setupSocket(true);
 }
+_state.setupLayout = (touch) => {
+	/* toggle the visibility of the create buttons */
+	if (_state.config.upload) {
+		if (touch) {
+			document.getElementById('fab-create-button').classList.remove('hidden');
+			document.getElementById('top-create-button').classList.add('hidden');
+		}
+		else {
+			document.getElementById('fab-create-button').classList.add('hidden');
+			document.getElementById('top-create-button').classList.remove('hidden');
+		}
+	}
+}
 
 window.onload = () => {
 	/* parse the initial configuration */
@@ -1935,9 +1944,11 @@ window.onload = () => {
 
 	/* setup the initial icons to be loaded, pre-load the close icon (is always used for notifications), and make the initial empty location */
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
-	document.getElementById('create-button').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('create-fab').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('create-top').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
-	document.getElementById('navigation').appendChild(_state.makeLocation('/', () => { }, false, false));
+	const navigation = document.getElementById('navigation');
+	navigation.replaceChild(_state.makeLocation('/', () => { }, false, false), navigation.children[1]);
 	_state.loadIcon('Preload', 'close').remove();
 
 	/* register the drag-and-drop handlers for the UI */
@@ -2034,9 +2045,9 @@ window.onload = () => {
 		if (_state.config.uploadLimit != 0)
 			document.getElementById('drop-detail').innerText = `(Max. ${_state.formatSize(_state.config.uploadLimit)})`;
 
-		/* show and wire up the create button */
-		document.getElementById('create-wrap').classList.remove('hidden');
-		document.getElementById('create-button').onclick = () => _state.showCreateMenu();
+		/* wire up the create buttons */
+		document.getElementById('create-fab').onclick = () => _state.showCreateMenu();
+		document.getElementById('create-top').onclick = () => _state.showCreateMenu();
 	}
 
 	/* register all mouse capture events for renaming (to prevent clicks from triggering any
@@ -2082,6 +2093,7 @@ window.onload = () => {
 			_state.hideOverlays();
 	};
 
-	/* setup the content view */
+	/* setup the content view and configure the device layout */
 	_state.setupContentView((__LOAD_PARAMS__?.path ?? '/'), (__LOAD_PARAMS__?.content ?? null), true);
+	_state.setupLayout(false);
 }

@@ -89,15 +89,17 @@
 .navigation .wrapper {
 	border-radius: 5px;
 	padding: 0.1em;
-	overflow: auto hidden;
+	overflow: hidden;
 	background-color: #ffffff;
 	max-width: fit-content;
 	display: flex;
 	flex-direction: row;
 	align-items: center;
+	justify-content: center;
 }
 
 .navigation .location {
+	overflow: auto hidden;
 	min-width: 0;
 	flex: 1;
 }
@@ -106,6 +108,7 @@
 	padding: 0.15em 0.75em;
 	border-radius: 3px;
 	height: 100%;
+	min-width: fit-content;
 	min-height: 1.8em;
 	display: flex;
 	align-items: center;
@@ -120,6 +123,14 @@
 	width: 2.75em;
 	min-width: 2.75em;
 	overflow: hidden;
+}
+
+.navigation .wrapper.far {
+	margin-left: auto;
+}
+
+.navigation .wrapper.far.hidden {
+	display: none;
 }
 
 .navigation .separator {
@@ -416,11 +427,7 @@
 	min-width: min(calc(100% - 2em), 35em);
 }
 
-.menu .navigation .create {
-	margin-left: auto;
-}
-
-.menu .navigation .create .button {
+.menu .navigation .far .button {
 	width: 1.8em;
 	min-width: 1.8em;
 	padding: 0.25em;
