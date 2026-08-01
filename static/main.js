@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { touchLayout: false, stamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
+const _state = { mouseLayout: false, select: { multi: false, count: 0 }, viewStamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -1047,23 +1047,13 @@ _state.renameAnyEntry = (element, exists, callback) => {
 	/* return the abort callback */
 	return () => updateOperation(false);
 }
-_state.createListEntry = (params, links) => {
+_state.createListEntry = (params, makeAsLink) => {
 	const row = buildElement({ class: 'row button' });
 
-	const entry = row.appendChild(buildElement({ kind: (links ? 'a' : 'div'), class: 'entry' }));
-
-	/* check if the entry should be created as navigation entry (only add the in-place redirections for directories) */
-	if (links) {
-		const entryPath = _state.fullPath(params.name);
-		entry.href = _state.encodeFilePath(entryPath);
-		if (params.kind == 'directory') {
-			entry.onclick = (e) => {
-				e.preventDefault();
-				e.stopPropagation();
-				_state.setupContentView(entryPath, null, false);
-			};
-		}
-	}
+	/* check if the entry should be created as navigation entry */
+	const entry = row.appendChild(buildElement({ kind: (makeAsLink ? 'a' : 'div'), class: 'entry' }));
+	if (makeAsLink)
+		entry.href = _state.encodeFilePath(_state.fullPath(params.name));
 
 	const icon = entry.appendChild(buildElement({ class: 'icon' }));
 	if (params.kind == 'directory')
@@ -1076,9 +1066,10 @@ _state.createListEntry = (params, links) => {
 	const info = details.appendChild(buildElement({ class: 'info' }));
 	const size = info.appendChild(buildElement({ text: '-' }));
 	const date = info.appendChild(buildElement({ text: '-' }));
-	const menu = row.appendChild(buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') }));
+	const menu = buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') });
+	const side = row.appendChild(buildElement({ class: 'side', child: menu }));
 
-	return { ...params, html: { row, name, size, date, menu } };
+	return { ...params, selected: false, html: { row, link: entry, name, size, date, side, menu } };
 }
 _state.updateList = (content) => {
 	const host = document.getElementById('content');
@@ -1106,7 +1097,7 @@ _state.updateList = (content) => {
 			continue;
 		}
 
-		/* check if an entry needs to be added */
+		/* check if an entry needs to be added (link and name will still match) */
 		let entry = null;
 		if (cmp > 0) {
 			entry = _state.createListEntry(content[next], true);
@@ -1118,26 +1109,73 @@ _state.updateList = (content) => {
 			entry.size = content[next].size;
 			entry.modified = content[next].modified;
 		}
+		++next, ++prev;
 
 		/* patch details up accordingly (must now exist in both lists, as either matched or newly created) */
-		if (content[next].kind == 'directory')
-			entry.html.size.innerText = `${content[next].size} Items`;
+		if (entry.kind == 'directory')
+			entry.html.size.innerText = `${entry.size} Items`;
 		else
-			entry.html.size.innerText = `${_state.formatSize(content[next].size)}`;
-		const date = new Date(content[next].modified);
+			entry.html.size.innerText = `${_state.formatSize(entry.size)}`;
+		const date = new Date(entry.modified);
 		entry.html.date.innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
 
-		/* patch the menu button and right click */
-		entry.html.menu.onclick = () => _state.showEntryMenu(entry);
-		entry.html.menu.oncontextmenu = (e) => e.stopPropagation();
+		/* patch up the menu button (not affected by different layouts) */
+		entry.html.menu.onclick = () => {
+			if (!_state.select.multi)
+				_state.showEntryMenu(entry);
+		};
+
+		/* patch the click and right click (only internally redirect clicks for directories) */
+		entry.html.link.onclick = (e) => {
+			if (!_state.mouseLayout && _state.select.multi) {
+				entry.selected = !entry.selected;
+				_state.updateSelection();
+			}
+			else if (entry.kind == 'directory')
+				_state.setupContentView(_state.fullPath(entry.name), null, false);
+			else
+				return;
+			e.preventDefault();
+			e.stopPropagation();
+		};
 		entry.html.row.oncontextmenu = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			_state.showEntryMenu(entry);
+			if (_state.mouseLayout)
+				_state.showEntryMenu(entry);
+			else {
+				entry.selected = !entry.selected;
+				_state.updateSelection();
+			}
 		};
-		++next, ++prev;
 	}
 	console.log(`content list has been updated to ${_state.list.length} entries...`);
+	_state.updateSelection();
+}
+_state.updateSelection = () => {
+	/* count the number of selected entries and update the selection style */
+	_state.select.count = 0;
+	for (const entry of _state.list) {
+		if (entry.selected) {
+			++_state.select.count;
+			entry.html.row.classList.add('selected');
+		}
+		else
+			entry.html.row.classList.remove('selected');
+	}
+
+	/* check if this is considered a mutli-selection, in which case the single-menus need to be hidden */
+	_state.select.multi = (_state.select.count > (_state.mouseLayout ? 1 : 0));
+	if (_state.select.multi)
+		document.getElementById('content').classList.add('multi-selected');
+	else
+		document.getElementById('content').classList.remove('multi-selected');
+
+	/* check if the menu button needs to be shown */
+	if (_state.select.multi)
+		document.getElementById('top-menu-button').classList.remove('hidden');
+	else
+		document.getElementById('top-menu-button').classList.add('hidden');
 }
 
 _state.createDirectory = (element, path, callback) => {
@@ -1832,14 +1870,14 @@ _state.setupContentView = async (path, content, update) => {
 		return _state.setupPageContext(true);
 
 	/* allocate the next view stamp and hide the overlays */
-	const viewStamp = ++_state.stamp;
+	const viewStamp = ++_state.viewStamp;
 	_state.hideOverlays();
 
 	/* check if the new state needs to be fetched and await its results */
 	let busyView = document.getElementById('content-busy'), fetchError = null;
 	if (content == null) {
 		const busyTimer = setTimeout(() => {
-			if (viewStamp == _state.stamp)
+			if (viewStamp == _state.viewStamp)
 				busyView.classList.remove('hidden');
 		}, DELAY_UNTIL_SPINNER);
 
@@ -1852,7 +1890,7 @@ _state.setupContentView = async (path, content, update) => {
 	}
 
 	/* check if the state is still in-order to be applied */
-	if (viewStamp != _state.stamp)
+	if (viewStamp != _state.viewStamp)
 		return;
 	busyView.classList.add('hidden');
 	if (_state.path == path)
@@ -1900,16 +1938,19 @@ _state.setupContentView = async (path, content, update) => {
 	/* connect the socket to listen for changes */
 	_state.setupSocket(true);
 }
-_state.setupLayout = (touch) => {
+_state.setupLayout = (mouse) => {
+	console.log(`Configuring layout to: ${mouse ? 'mouse' : 'touch'}`);
+	_state.mouseLayout = mouse;
+
 	/* toggle the visibility of the create buttons */
 	if (_state.config.upload) {
-		if (touch) {
-			document.getElementById('fab-create-button').classList.remove('hidden');
-			document.getElementById('top-create-button').classList.add('hidden');
-		}
-		else {
+		if (mouse) {
 			document.getElementById('fab-create-button').classList.add('hidden');
 			document.getElementById('top-create-button').classList.remove('hidden');
+		}
+		else {
+			document.getElementById('fab-create-button').classList.remove('hidden');
+			document.getElementById('top-create-button').classList.add('hidden');
 		}
 	}
 }
@@ -1946,6 +1987,7 @@ window.onload = () => {
 	document.getElementById('button-parent').appendChild(_state.loadIcon('Parent', 'back'));
 	document.getElementById('create-fab').appendChild(_state.loadIcon('Create', 'create'));
 	document.getElementById('create-top').appendChild(_state.loadIcon('Create', 'create'));
+	document.getElementById('menu-top').appendChild(_state.loadIcon('Menu', 'menu'));
 	document.getElementById('pick-create').appendChild(_state.loadIcon('Create', 'create'));
 	const navigation = document.getElementById('navigation');
 	navigation.replaceChild(_state.makeLocation('/', () => { }, false, false), navigation.children[1]);
@@ -2093,7 +2135,11 @@ window.onload = () => {
 			_state.hideOverlays();
 	};
 
-	/* setup the content view and configure the device layout */
+	/* register the layout change detection and configure the initial layout */
+	const layoutListener = matchMedia('(pointer: fine) and (hover: hover)');
+	layoutListener.onchange = () => _state.setupLayout(layoutListener.matches);
+	_state.setupLayout(layoutListener.matches);
+
+	/* setup the initial content view */
 	_state.setupContentView((__LOAD_PARAMS__?.path ?? '/'), (__LOAD_PARAMS__?.content ?? null), true);
-	_state.setupLayout(false);
 }
