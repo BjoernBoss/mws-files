@@ -590,25 +590,30 @@ _state.updateOverlay = (name, notify) => {
 	}
 	return true;
 }
-_state.showEntryMenu = (entry) => {
-	let menuSize = 2, entryIndex = 2;
+_state.showEntriesMenu = (entries) => {
+	if (entries.length == 0) return;
+	const single = (entries.length == 1 ? entries[0] : null);
+
+	let menuSize = 1;
+	if (single != null)
+		menuSize += 1;
 	if (_state.config.upload)
 		menuSize += 1;
 	if (_state.config.delete)
 		menuSize += 1;
 	if (_state.config.upload && _state.config.delete)
-		menuSize += 2;
-	if (navigator?.clipboard != null)
+		menuSize += (single != null ? 2 : 1);
+	if (single != null && navigator?.clipboard != null)
 		++menuSize;
 
 	/* initialize the menu caption and list size */
 	const content = document.getElementById('menu-content');
 	document.getElementById('menu-caption').classList.remove('hidden');
-	document.getElementById('menu-name').innerText = entry.name;
+	document.getElementById('menu-name').innerText = (single?.name ?? `${entries.length} Objects Selected`);
 	_state.updateMenuLength(content, menuSize);
 
 	/* helper method to ensure the entry is still valid */
-	let settled = false;
+	let settled = false, entryIndex = 0;
 	const validateEntry = (checkSettled) => {
 		if (checkSettled && settled) return false;
 		if (_state.list.indexOf(entry) >= 0)
@@ -620,21 +625,23 @@ _state.showEntryMenu = (entry) => {
 	};
 
 	/* register the common menu options */
-	content.children[0].children[0].appendChild(_state.loadIcon('Open', 'open'));
-	content.children[0].children[1].innerText = 'Open';
-	content.children[0].onclick = (e) => {
-		e.stopPropagation();
-		if (validateEntry(true)) {
-			const path = _state.fullPath(entry.name);
-			if (entry.kind == 'directory')
+	if (single != null) {
+		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Open', 'open'));
+		content.children[entryIndex].children[1].innerText = 'Open';
+		content.children[entryIndex++].onclick = (e) => {
+			e.stopPropagation();
+			if (!validateEntry(true)) return;
+
+			const path = _state.fullPath(single.name);
+			if (single.kind == 'directory')
 				_state.setupContentView(path, null, false);
 			else
 				document.location = _state.encodeFilePath(path);
-		}
-	};
-	content.children[1].children[0].appendChild(_state.loadIcon('Download', 'download'));
-	content.children[1].children[1].innerText = 'Download';
-	content.children[1].onclick = (e) => {
+		};
+	}
+	content.children[entryIndex].children[0].appendChild(_state.loadIcon('Download', 'download'));
+	content.children[entryIndex].children[1].innerText = 'Download';
+	content.children[entryIndex++].onclick = (e) => {
 		e.stopPropagation();
 		if (!validateEntry(true)) return;
 		_state.updateOverlay('menu-overlay', null);
@@ -647,21 +654,22 @@ _state.showEntryMenu = (entry) => {
 	};
 
 	/* register the copy-url interaction */
-	if (navigator?.clipboard != null) {
+	if (single != null && navigator?.clipboard != null) {
 		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Clipboard', 'clipboard'));
 		content.children[entryIndex].children[1].innerText = 'Copy URL';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntry(true)) return;
+
 			_state.updateOverlay('menu-overlay', null);
-			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(entry.name)), document.location).href)
+			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(single.name)), document.location).href)
 				.then(() => _state.pushStaticText('Copied to clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
 		};
 	}
 
 	/* register the modification interactions */
-	if (_state.config.upload && _state.config.delete) {
+	if (single != null && _state.config.upload && _state.config.delete) {
 		content.children[entryIndex].children[0].appendChild(_state.loadIcon('Rename', 'rename'));
 		content.children[entryIndex].children[1].innerText = 'Rename';
 		content.children[entryIndex++].onclick = (e) => {
@@ -670,23 +678,23 @@ _state.showEntryMenu = (entry) => {
 			_state.updateOverlay('menu-overlay', null);
 
 			/* start renaming the element */
-			_state.renameAnyEntry(entry.html.name, () => validateEntry(false), async (fileName) => {
-				entry.html.name.innerText = entry.name;
-				if (fileName == null || fileName == entry.name)
+			_state.renameAnyEntry(single.html.name, () => validateEntry(false), async (fileName) => {
+				single.html.name.innerText = single.name;
+				if (fileName == null || fileName == single.name)
 					return;
 				const message = _state.pushMessage();
-				message('text')(`Rename '${entry.name}' to '${fileName}'`);
+				message('text')(`Rename '${single.name}' to '${fileName}'`);
 				const update = message('status');
 				update('Renaming...');
 
 				/* try to perform the actual move */
 				try {
-					await _state.fs.move(_state.fullPath(entry.name), _state.fullPath(fileName), entry.kind);
+					await _state.fs.move(_state.fullPath(single.name), _state.fullPath(fileName), single.kind);
 					update('Successfully renamed!', true);
 					message();
 
 					/* apply the update preemtively to the list (ensure that a new list is created) */
-					_state.updateList(_state.list.filter((e) => e != entry).concat([{ name: fileName, kind: entry.kind, size: entry.size, modified: entry.modified }]));
+					_state.updateList(_state.list.filter((e) => e != single).concat([{ name: fileName, kind: single.kind, size: single.size, modified: single.modified }]));
 				}
 				catch (e) { update(e, false); }
 			});
@@ -699,7 +707,7 @@ _state.showEntryMenu = (entry) => {
 			e.stopPropagation();
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			_state.showMoveCopyPicker(false, (path) => {
+			_state.showMoveCopyPicker(false, single, (path) => {
 				if (!validateEntry(false)) return;
 				if (path != _state.path)
 					return _state.copyContent(entry, buildPath(path, entry.name), path);
@@ -736,7 +744,7 @@ _state.showEntryMenu = (entry) => {
 			e.stopPropagation();
 			if (!validateEntry(true)) return;
 			_state.updateOverlay('menu-overlay', null);
-			_state.showMoveCopyPicker(true, async (path) => {
+			_state.showMoveCopyPicker(true, false, async (path) => {
 				if (!validateEntry(false))
 					return;
 				const message = _state.pushMessage();
@@ -863,7 +871,7 @@ _state.showCreateMenu = () => {
 		input.click();
 	};
 }
-_state.showMoveCopyPicker = (move, callback) => {
+_state.showMoveCopyPicker = (move, self, callback) => {
 	if (move ? (!_state.config.upload || !_state.config.delete) : (!_state.config.upload))
 		return _state.pushStaticText(`Not allowed to ${move ? 'move' : 'copy'} content`, false);
 
@@ -930,7 +938,7 @@ _state.showMoveCopyPicker = (move, callback) => {
 		const directories = fetched[path];
 
 		/* update the confirmation button (clear the handler while disabled) */
-		const disabled = (move && path == _state.path);
+		const disabled = (path == _state.path && !self);
 		if (disabled)
 			confirm.classList.add('disabled');
 		else
@@ -1156,7 +1164,7 @@ _state.updateList = (content) => {
 		entry.html.menu.onclick = (e) => {
 			e.stopPropagation();
 			if (!_state.selecting)
-				_state.showEntryMenu(entry);
+				_state.showEntriesMenu([entry]);
 		};
 
 		/* patch the click and right click (only internally redirect clicks for directories) */
@@ -1176,7 +1184,7 @@ _state.updateList = (content) => {
 			e.preventDefault();
 			e.stopPropagation();
 			if (_state.mouseLayout)
-				_state.showEntryMenu(entry);
+				_state.showEntriesMenu([entry]);
 			else {
 				entry.selected = !entry.selected;
 				_state.updateSelection(false);
@@ -1212,6 +1220,16 @@ _state.updateSelection = (clear) => {
 		document.getElementById('top-menu-button').classList.remove('hidden');
 	else
 		document.getElementById('top-menu-button').classList.add('hidden');
+
+	/* hide the create-menu buttons */
+	if (_state.selecting) {
+		document.getElementById('top-create-button').classList.add('selecting');
+		document.getElementById('fab-create-button').classList.add('selecting');
+	}
+	else {
+		document.getElementById('top-create-button').classList.remove('selecting');
+		document.getElementById('fab-create-button').classList.remove('selecting');
+	}
 }
 
 _state.createDirectory = (element, path, callback) => {
@@ -2201,11 +2219,26 @@ window.onload = () => {
 	});
 	mainBody.addEventListener('click', (e) => {
 		if (!_state.selecting || e.target != clickTarget) return;
+		if (clickTarget.dataset.clearselection != 'true') return;
 		clickTarget = null;
 		e.stopPropagation();
 		e.preventDefault();
 		_state.updateSelection(true);
 	});
+
+	/* register the multi-menu button handler */
+	document.getElementById('top-menu-button').onclick = (e) => {
+		e.stopPropagation();
+		if (!_state.selecting) return;
+
+		/* collect the selected entries and show the entry menu */
+		const entries = [];
+		for (const entry of _state.list) {
+			if (entry.selected)
+				entries.push(entry);
+		}
+		_state.showEntriesMenu(entries);
+	};
 
 	/* register the layout change detection and configure the initial layout */
 	const layoutListener = matchMedia('(pointer: fine) and (hover: hover)');

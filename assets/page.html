@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: BSD-3-Clause -->
 <!-- Copyright (c) 2026 Bjoern Boss Henrichsen -->
 <div class="main-body" id="body">
-	<div class="navigation header" id="navigation">
+	<div class="navigation header" id="navigation" data-clearselection="true">
 		<div class="wrapper">
 			<a class="button icon" id="button-parent"></a>
 		</div>
@@ -16,10 +16,10 @@
 		</div>
 	</div>
 
-	<div class="primary">
-		<div class="content">
-			<div class="empty">Directory is empty</div>
-			<div class="window" id="content"></div>
+	<div class="primary" data-clearselection="true">
+		<div class="content" data-clearselection="true">
+			<div class="empty" data-clearselection="true">Directory is empty</div>
+			<div class="window" id="content" data-clearselection="true"></div>
 		</div>
 		<div id="content-busy" class="busy">
 			<div class="spinner"></div>

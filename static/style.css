@@ -129,6 +129,10 @@
 	display: none;
 }
 
+.navigation .wrapper.selecting {
+	display: none;
+}
+
 .navigation .far {
 	margin-left: auto;
 	display: flex;
@@ -309,6 +313,10 @@
 }
 
 .modify.hidden {
+	display: none;
+}
+
+.modify.selecting {
 	display: none;
 }
 
