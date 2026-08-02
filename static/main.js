@@ -727,7 +727,7 @@ _state.showEntriesMenu = (entries) => {
 				if (!validateEntries(false)) return;
 
 				if (path != _state.path)
-					return _state.copyContent(___entry, buildPath(path, ___entry.name), path);
+					return _state.copyContent(entries.map((e) => { return { kind: e.kind, name: e.name, size: e.size, modified: e.modified, target: buildPath(path, e.name) }; }), path);
 				if (single == null) return;
 
 				/* find the temporary name to be used */
@@ -750,7 +750,7 @@ _state.showEntriesMenu = (entries) => {
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
 					if (fileName != null && validateEntries(false))
-						_state.copyContent(single, _state.fullPath(fileName), fileName);
+						_state.copyContent({ kind: single.kind, name: single.name, size: single.size, modified: single.modified, target: _state.fullPath(fileName) }, fileName);
 				});
 			});
 		};
@@ -1485,8 +1485,7 @@ _state.removeContent = async (entries) => {
 	caption(`Remove ${entries.length == 1 ? `'${entries[0].name}'` : `${entries.length} objects`}`);
 
 	/* initialization helper methods */
-	const totalList = [], batchState = {}, calcUpdate = message('status'), initPromises = [];
-	let initFailed = false;
+	let totalList = [], batchState = {}, calcUpdate = message('status'), initPromises = [], initFailed = false;
 	const fetchAndUpdate = async (path) => {
 		if (initFailed) return;
 
@@ -1528,8 +1527,6 @@ _state.removeContent = async (entries) => {
 		else
 			initPromises.push(fetchAndUpdate(`/${entry.name}`));
 	}
-
-	/* await the initialization and check if it failed */
 	await Promise.all(initPromises);
 	if (initFailed) {
 		--_state.busy;
@@ -1608,10 +1605,12 @@ _state.removeContent = async (entries) => {
 	if (totalFailed == totalList.length)
 		message(true);
 }
-_state.copyContent = async (entry, target, printTarget) => {
+_state.copyContent = async (entries, printTarget) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
-	console.log(`Copying [${_state.fullPath(entry.name)}] to [${target}]...`);
+	if (entries.length == 0) return;
+	for (const entry of entries)
+		console.log(`Copying [${_state.fullPath(entry.name)}] to [${entry.target}]...`);
 	const basePath = _state.path;
 
 	/* mark the state as busy */
@@ -1620,57 +1619,57 @@ _state.copyContent = async (entry, target, printTarget) => {
 	/* setup the notification */
 	const message = _state.pushMessage();
 	const caption = message('text');
-	caption(`Copy '${entry.name}' to '${printTarget}'`);
+	caption(`Copy ${entries.length == 1 ? `'${entries[0].name}'` : `${entries.length} objects`} to '${printTarget}'`);
 
-	/* recursively collect the list of all files and directories to be copied */
-	const totalList = [], batchState = {};
-	if (entry.kind == 'directory') {
-		const update = message('status');
-		update('Calculating...');
+	/* initialization helper methods */
+	let totalList = [], batchState = {}, calcUpdate = message('status'), initPromises = [], initFailed = false;
+	const fetchAndUpdate = async (src, dst, parent, modified) => {
+		if (initFailed) return;
 
-		let initFailed = false;
-		const fetchAndUpdate = async (src, dst, parent, modified) => {
-			if (initFailed) return;
+		/* write the directory to the list */
+		const index = totalList.length;
+		totalList.push({ src, dst, kind: 'directory', parent, modified, size: 0 });
 
-			/* write the directory to the list */
-			const index = totalList.length;
-			totalList.push({ src, dst, kind: 'directory', parent, modified, size: 0 });
-
-			/* fetch the content list */
-			let content = null;
-			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, src))); }
-			catch (e) {
-				if (!initFailed)
-					update(`Enumerating '${src.substring(1)}' error: ${e}`, false);
-				initFailed = true;
-				return;
-			}
-			if (initFailed) return;
-
-			/* recursively visit all children and process them (after the parent to ensure it is already in the list) */
-			const promises = [];
-			for (const name in content) {
-				if (initFailed) return;
-
-				const childSrc = buildPath(src, name);
-				const childDst = buildPath(dst, name);
-				if (content[name].kind == 'file')
-					totalList.push({ src: childSrc, dst: childDst, kind: 'file', size: content[name].size, modified: content[name].modified, parent: index });
-				else
-					promises.push(fetchAndUpdate(childSrc, childDst, index, content[name].modified));
-			}
-			await Promise.all(promises);
-		};
-		await fetchAndUpdate(`/${entry.name}`, target, null, entry.modified);
-
-		if (initFailed) {
-			--_state.busy;
+		/* fetch the content list */
+		let content = null;
+		try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, src))); }
+		catch (e) {
+			if (!initFailed)
+				calcUpdate(`Enumerating '${src.substring(1)}' error: ${e}`, false);
+			initFailed = true;
 			return;
 		}
-		update();
+		if (initFailed) return;
+
+		/* recursively visit all children and process them (after the parent to ensure it is already in the list) */
+		const promises = [];
+		for (const name in content) {
+			if (initFailed) return;
+
+			const childSrc = buildPath(src, name);
+			const childDst = buildPath(dst, name);
+			if (content[name].kind == 'file')
+				totalList.push({ src: childSrc, dst: childDst, kind: 'file', size: content[name].size, modified: content[name].modified, parent: index });
+			else
+				promises.push(fetchAndUpdate(childSrc, childDst, index, content[name].modified));
+		}
+		await Promise.all(promises);
+	};
+
+	/* recursively collect the list of all files and directories to be copied */
+	calcUpdate('Calculating...');
+	for (const entry of entries) {
+		if (entry.kind == 'file')
+			totalList.push({ src: `/${entry.name}`, dst: entry.target, kind: 'file', size: entry.size, modified: entry.modified, parent: null });
+		else
+			initPromises.push(fetchAndUpdate(`/${entry.name}`, entry.target, null, entry.modified));
 	}
-	else
-		totalList.push({ src: `/${entry.name}`, dst: target, kind: 'file', size: entry.size, modified: entry.modified, parent: null });
+	await Promise.all(initPromises);
+	if (initFailed) {
+		--_state.busy;
+		return;
+	}
+	calcUpdate();
 	caption(null, `0/${totalList.length}`);
 
 	/* helper functions to perform copying */
