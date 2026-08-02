@@ -746,7 +746,8 @@ _state.showEntriesMenu = (entries) => {
 				host.insertBefore(fakeEntry.html.row, host.children[0]);
 				fakeEntry.html.row.scrollIntoView();
 
-				/* start editing the new element */
+				/* clear the previous selection and start editing the new element */
+				_state.updateSelection(true);
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
 					if (fileName != null && validateEntries(false))
@@ -2031,6 +2032,12 @@ _state.setupLayout = (mouse) => {
 			document.getElementById('top-create-button').classList.add('hidden');
 		}
 	}
+
+	/* update the option menu button witdth */
+	if (mouse)
+		document.getElementById('content').classList.remove('wide');
+	else
+		document.getElementById('content').classList.add('wide');
 
 	/* update the selection (as it differs based on the mode) */
 	_state.updateSelection(false);

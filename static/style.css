@@ -16,8 +16,9 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	--button-animations: 100ms;
+	--button-animations: 75ms;
 	--drop-zone-animations: 200ms;
+	--menu-button-animations: 100ms;
 }
 
 .main-body a {
@@ -40,7 +41,8 @@
 
 /* buttons support [disabled] and [toggled] */
 .main-body .button {
-	transition: all var(--button-animations) ease;
+	transition: color var(--button-animations) ease,
+		background-color var(--button-animations) ease;
 	cursor: pointer;
 }
 
@@ -237,24 +239,38 @@
 
 .content .row .side {
 	width: 3.1em;
+	margin-left: 0;
 	max-width: fit-content;
-	transition: width cubic-bezier(0.75, 0, 0.25, 1) 100ms;
+	transition: width cubic-bezier(0.75, 0, 0.25, 1) var(--menu-button-animations),
+		margin-left cubic-bezier(0.75, 0, 0.25, 1) var(--menu-button-animations);
+	overflow: hidden;
+}
+
+.content:has(.window.wide) .row .side {
+	width: 3.9em;
 }
 
 .content:has(.window.multi-selected) .row .side {
-	width: 0.75em;
+	width: 0;
+	margin-left: 0.75em;
 }
 
 .content .row .side .option {
 	margin: 0 0.75em;
-	padding: 2px;
+	padding: 1px;
 	border: 1px solid;
 	border-radius: 3px;
 	user-select: none;
 	min-width: 1.6em;
-	min-height: 1.6em;
+	height: 1.6em;
 	display: flex;
+	justify-content: center;
+	align-items: center;
 	color: #00000060;
+}
+
+.content:has(.window.wide) .row .side .option {
+	min-width: 2.4em;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -780,4 +796,9 @@
 	overflow: hidden;
 	justify-content: center;
 	align-items: center;
+}
+
+.load-icon svg {
+	max-width: 100%;
+	max-height: 100%;
 }
