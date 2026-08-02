@@ -396,7 +396,8 @@ _state.pushRawNotification = (body) => {
 	/* register the animated close handler and the phase-out handler */
 	let faded = false, closed = false;
 	close.onclick = (e) => {
-		e.stopPropagation();
+		if (e != null)
+			e.stopPropagation();
 		if (closed) return; closed = true;
 
 		/* manually animate, due to unknown initial height */
@@ -614,11 +615,24 @@ _state.showEntriesMenu = (entries) => {
 
 	/* helper method to ensure the entry is still valid */
 	let settled = false, entryIndex = 0;
-	const validateEntry = (checkSettled) => {
+	const validateEntries = (checkSettled) => {
 		if (checkSettled && settled) return false;
-		if (_state.list.indexOf(entry) >= 0)
+
+		/* check if any of the entires has been removed */
+		let dropped = 0, droppedName = '';
+		for (const entry of entries) {
+			if (_state.list.indexOf(entry) >= 0)
+				continue;
+			++dropped, droppedName = entry.name;
+		}
+		if (dropped == 0)
 			return true;
-		_state.pushStaticText(`'${entry.name}' does not exist anymore`, false);
+
+		if (dropped == 1)
+			_state.pushStaticText(`'${droppedName}' does not exist anymore`, false);
+		else
+			_state.pushStaticText(`${dropped} objects do not exist anymore`, false);
+
 		if (!settled)
 			_state.updateOverlay('menu-overlay', null);
 		return false;
@@ -630,7 +644,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Open';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 
 			const path = _state.fullPath(single.name);
 			if (single.kind == 'directory')
@@ -643,14 +657,16 @@ _state.showEntriesMenu = (entries) => {
 	content.children[entryIndex].children[1].innerText = 'Download';
 	content.children[entryIndex++].onclick = (e) => {
 		e.stopPropagation();
-		if (!validateEntry(true)) return;
+		if (!validateEntries(true)) return;
 		_state.updateOverlay('menu-overlay', null);
 
 		/* request the actual download of the content */
-		const download = document.createElement('a');
-		download.href = `${_state.encodeFilePath(_state.fullPath(entry.name))}?kind=${entry.kind}&download=true`;
-		download.download = '';
-		download.click();
+		for (const entry of entries) {
+			const download = document.createElement('a');
+			download.href = `${_state.encodeFilePath(_state.fullPath(entry.name))}?kind=${entry.kind}&download=true`;
+			download.download = '';
+			download.click();
+		}
 	};
 
 	/* register the copy-url interaction */
@@ -659,7 +675,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Copy URL';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 
 			_state.updateOverlay('menu-overlay', null);
 			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(single.name)), document.location).href)
@@ -674,11 +690,11 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Rename';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 			_state.updateOverlay('menu-overlay', null);
 
 			/* start renaming the element */
-			_state.renameAnyEntry(single.html.name, () => validateEntry(false), async (fileName) => {
+			_state.renameAnyEntry(single.html.name, () => validateEntries(false), async (fileName) => {
 				single.html.name.innerText = single.name;
 				if (fileName == null || fileName == single.name)
 					return;
@@ -705,16 +721,18 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Copy to...';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(false, single, (path) => {
-				if (!validateEntry(false)) return;
+				if (!validateEntries(false)) return;
+
 				if (path != _state.path)
-					return _state.copyContent(entry, buildPath(path, entry.name), path);
+					return _state.copyContent(___entry, buildPath(path, ___entry.name), path);
+				if (single == null) return;
 
 				/* find the temporary name to be used */
-				const dot = entry.name.lastIndexOf('.');
-				const baseName = (entry.name.substring(0, dot < 0 ? entry.name.length : dot)), extName = (dot < 0 ? '' : entry.name.substring(dot));
+				const dot = single.name.lastIndexOf('.');
+				const baseName = (single.name.substring(0, dot < 0 ? single.name.length : dot)), extName = (dot < 0 ? '' : single.name.substring(dot));
 				let tempName = '';
 				for (let i = 1; ; ++i) {
 					tempName = `${baseName} - Copy${i > 1 ? ` (${i})` : ''}${extName}`;
@@ -723,7 +741,7 @@ _state.showEntriesMenu = (entries) => {
 				}
 
 				/* for an in-place copy, create a new temporary entry to be renamed */
-				const fakeEntry = _state.createListEntry({ name: tempName, kind: entry.kind }, false);
+				const fakeEntry = _state.createListEntry({ name: tempName, kind: single.kind }, false);
 				const host = document.getElementById('content');
 				host.insertBefore(fakeEntry.html.row, host.children[0]);
 				fakeEntry.html.row.scrollIntoView();
@@ -731,8 +749,8 @@ _state.showEntriesMenu = (entries) => {
 				/* start editing the new element */
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
-					if (fileName != null && validateEntry(false))
-						_state.copyContent(entry, _state.fullPath(fileName), fileName);
+					if (fileName != null && validateEntries(false))
+						_state.copyContent(single, _state.fullPath(fileName), fileName);
 				});
 			});
 		};
@@ -742,24 +760,24 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Move to...';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 			_state.updateOverlay('menu-overlay', null);
 			_state.showMoveCopyPicker(true, false, async (path) => {
-				if (!validateEntry(false))
-					return;
+				if (!validateEntries(false)) return;
+
 				const message = _state.pushMessage();
-				message('text')(`Move '${entry.name}' to '${path}'`);
+				message('text')(`Move '${___entry.name}' to '${path}'`);
 				const update = message('status');
 				update('Moving...');
 
 				/* try to perform the actual move */
 				try {
-					await _state.fs.move(_state.fullPath(entry.name), buildPath(path, entry.name), entry.kind);
+					await _state.fs.move(_state.fullPath(___entry.name), buildPath(path, ___entry.name), ___entry.kind);
 					update('Successfully moved!', true);
 					message();
 
 					/* apply the update preemtively to the list (ensure that a new list is created) */
-					_state.updateList(_state.list.filter((e) => e != entry));
+					_state.updateList(_state.list.filter((e) => e != ___entry));
 				}
 				catch (e) { update(e, false); }
 			});
@@ -773,13 +791,13 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].classList.add('delete');
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntry(true)) return;
+			if (!validateEntries(true)) return;
 			_state.updateOverlay('menu-overlay', null);
 
 			/* ask the user if the deletion should actually be performed */
-			_state.showDeleteConfirm(entry.name, () => {
-				if (validateEntry(false))
-					_state.removeContent(entry);
+			_state.showDeleteConfirm(single == null ? entries.map((v) => v.name).join('\n') : _state.fullPath(single.name), () => {
+				if (validateEntries(false))
+					_state.removeContent(entries);
 			});
 		};
 	}
@@ -1007,8 +1025,8 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 		clearBusy();
 	});
 }
-_state.showDeleteConfirm = (name, callback) => {
-	document.getElementById('remove-name').innerText = _state.fullPath(name);
+_state.showDeleteConfirm = (message, callback) => {
+	document.getElementById('remove-name').innerText = message;
 
 	let settled = false;
 	document.getElementById('remove-confirm').onclick = (e) => {
@@ -1450,10 +1468,12 @@ _state.uploadContent = async (list, what) => {
 	if (totalFailed == totalList.length)
 		message(true);
 }
-_state.removeContent = async (entry) => {
+_state.removeContent = async (entries) => {
 	if (!_state.config.delete)
 		return _state.pushStaticText('Not allowed to delete content', false);
-	console.log(`Removing [${_state.fullPath(entry.name)}]...`);
+	if (entries.length == 0) return;
+	for (const entry of entries)
+		console.log(`Removing [${_state.fullPath(entry.name)}]...`);
 	const basePath = _state.path;
 
 	/* mark the state as busy */
@@ -1462,57 +1482,60 @@ _state.removeContent = async (entry) => {
 	/* setup the notification */
 	const message = _state.pushMessage();
 	const caption = message('text');
-	caption(`Remove '${entry.name}'`);
+	caption(`Remove ${entries.length == 1 ? `'${entries[0].name}'` : `${entries.length} objects`}`);
 
-	/* recursively collect the list of all files and directories to be removed */
-	const totalList = [], batchState = {};
-	if (entry.kind == 'directory') {
-		const update = message('status');
-		update('Calculating...');
+	/* initialization helper methods */
+	const totalList = [], batchState = {}, calcUpdate = message('status'), initPromises = [];
+	let initFailed = false;
+	const fetchAndUpdate = async (path) => {
+		if (initFailed) return;
 
-		let initFailed = false;
-		const fetchAndUpdate = async (path) => {
-			if (initFailed) return;
-
-			/* fetch the content list */
-			let content = null;
-			try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, path))); }
-			catch (e) {
-				if (!initFailed)
-					update(`Enumerating '${path.substring(1)}' error: ${e}`, false);
-				initFailed = true;
-				return;
-			}
-			if (initFailed) return;
-
-			/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
-			const promises = [], children = [];
-			for (const name in content) {
-				if (initFailed) return;
-
-				const childPath = buildPath(path, name);
-				if (content[name].kind == 'file') {
-					children.push(totalList.length);
-					totalList.push({ path: childPath, kind: 'file' });
-				}
-				else
-					promises.push(fetchAndUpdate(childPath));
-			}
-
-			/* await the children and then push itself onto the list (with the indices of all children) */
-			totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
-			return totalList.length - 1;
-		};
-		await fetchAndUpdate(`/${entry.name}`);
-
-		if (initFailed) {
-			--_state.busy;
+		/* fetch the content list */
+		let content = null;
+		try { content = await _state.batch(batchState, () => _state.fs.fetchDirectory(buildPath(basePath, path))); }
+		catch (e) {
+			if (!initFailed)
+				calcUpdate(`Enumerating '${path.substring(1)}' error: ${e}`, false);
+			initFailed = true;
 			return;
 		}
-		update();
+		if (initFailed) return;
+
+		/* recursively visit all children (before inserting self, to ensure the children are ahead in the list) */
+		const promises = [], children = [];
+		for (const name in content) {
+			if (initFailed) return;
+
+			const childPath = buildPath(path, name);
+			if (content[name].kind == 'file') {
+				children.push(totalList.length);
+				totalList.push({ path: childPath, kind: 'file' });
+			}
+			else
+				promises.push(fetchAndUpdate(childPath));
+		}
+
+		/* await the children and then push itself onto the list (with the indices of all children) */
+		totalList.push({ path, kind: 'directory', children: children.concat(await Promise.all(promises)) });
+		return totalList.length - 1;
+	};
+
+	/* recursively collect the list of all files and directories to be removed */
+	calcUpdate('Calculating...');
+	for (const entry of entries) {
+		if (entry.kind == 'file')
+			totalList.push({ path: `/${entry.name}`, kind: 'file' });
+		else
+			initPromises.push(fetchAndUpdate(`/${entry.name}`));
 	}
-	else
-		totalList.push({ path: `/${entry.name}`, kind: 'file' });
+
+	/* await the initialization and check if it failed */
+	await Promise.all(initPromises);
+	if (initFailed) {
+		--_state.busy;
+		return;
+	}
+	calcUpdate();
 	caption(null, `0/${totalList.length}`);
 
 	/* iterate over the list and collect the deletions */
@@ -1576,7 +1599,7 @@ _state.removeContent = async (entry) => {
 		message('status')(`Failed to delete ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
 	else {
 		if (_state.path == basePath)
-			_state.updateList(_state.list.filter((value) => value.name != entry.name));
+			_state.updateList(_state.list.filter((value) => !entries.some((e) => value.name == e.name)));
 		message('status')('Successfully removed!', true);
 		message();
 	}
