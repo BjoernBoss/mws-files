@@ -766,21 +766,9 @@ _state.showEntriesMenu = (entries) => {
 			_state.showMoveCopyPicker(true, false, async (path) => {
 				if (!validateEntries(false)) return;
 
-				const message = _state.pushMessage();
-				message('text')(`Move '${___entry.name}' to '${path}'`);
-				const update = message('status');
-				update('Moving...');
-
-				/* try to perform the actual move */
-				try {
-					await _state.fs.move(_state.fullPath(___entry.name), buildPath(path, ___entry.name), ___entry.kind);
-					update('Successfully moved!', true);
-					message();
-
-					/* apply the update preemtively to the list (ensure that a new list is created) */
-					_state.updateList(_state.list.filter((e) => e != ___entry));
-				}
-				catch (e) { update(e, false); }
+				_state.moveContent(entries.map((e) => {
+					return { kind: e.kind, name: e.name, size: e.size, modified: e.modified, target: buildPath(path, e.name) };
+				}), path);
 			});
 		};
 	}
@@ -1410,8 +1398,6 @@ _state.uploadContent = async (list, what) => {
 	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0, batchState = {};
 	for (const entry of totalList) {
 		entry.promise = (async () => {
-			let success = false;
-
 			/* await the parent (before batching to ensure it does not consume a batch-slot) */
 			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
 			if (totalFailed > FILE_MAX_FAILURES)
@@ -1419,6 +1405,7 @@ _state.uploadContent = async (list, what) => {
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
+				let success = false;
 				if (failedParent) {
 					if (totalFailed > FILE_MAX_FAILURES)
 						return false;
@@ -1459,14 +1446,14 @@ _state.uploadContent = async (list, what) => {
 	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed uploads (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
-		message('status')(`Failed to upload ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
+		message('status')(`Failed to upload ${totalFailed} ${totalFailed == 1 ? 'entry' : 'entries'}${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
 	else {
 		message('status')('Successfully uploaded!', true);
 		message();
 	}
 
 	/* check if all entries failed, in which case the host message does not have any benefit of existing */
-	if (totalFailed == totalList.length)
+	if (totalFailed == totalList.length && totalSkipped == 0)
 		message(true);
 }
 _state.removeContent = async (entries) => {
@@ -1540,8 +1527,6 @@ _state.removeContent = async (entries) => {
 	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
 		entry.promise = (async () => {
-			let success = false;
-
 			/* await the children (before batching to ensure it does not consume a batch-slot) */
 			let childrenValid = true;
 			if (entry.kind == 'directory') {
@@ -1553,6 +1538,7 @@ _state.removeContent = async (entries) => {
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
+				let success = false;
 				if (!childrenValid) {
 					if (totalFailed > FILE_MAX_FAILURES)
 						return false;
@@ -1568,8 +1554,18 @@ _state.removeContent = async (entries) => {
 					update(entry.path.substring(1));
 
 					try {
-						await _state.fs.remove(buildPath(basePath, entry.path), entry.kind);
+						const tempPath = buildPath(basePath, entry.path);
+						await _state.fs.remove(tempPath, entry.kind);
 						success = true;
+
+						/* check if this is a root object and preemtively remove the entry from the list (ensure that a new list is created) */
+						const name = tempPath.substring(tempPath.lastIndexOf('/') + 1);
+						if (tempPath == _state.fullPath(name)) {
+							let removed = false;
+							const list = _state.list.filter((v) => { if (v.name != name) return true; removed = true; return false; });
+							if (removed)
+								_state.updateList(list);
+						}
 					}
 					catch (e) {
 						_state.pushStaticTask(`Remove '${entry.path.substring(1)}'`, e, false);
@@ -1590,20 +1586,18 @@ _state.removeContent = async (entries) => {
 	/* clear the busy state */
 	--_state.busy;
 
-	/* log the final message and optionally preemtively remove the entry from the list (ensure that a new list is created; skipped can only be > 0, if failed is > 0) */
+	/* log the final status message */
 	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed deletions (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
-		message('status')(`Failed to delete ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
+		message('status')(`Failed to delete ${totalFailed} ${totalFailed == 1 ? 'entry' : 'entries'}${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
 	else {
-		if (_state.path == basePath)
-			_state.updateList(_state.list.filter((value) => !entries.some((e) => value.name == e.name)));
 		message('status')('Successfully removed!', true);
 		message();
 	}
 
 	/* check if all entries failed, in which case the host message does not have any benefit of existing */
-	if (totalFailed == totalList.length)
+	if (totalFailed == totalList.length && totalSkipped == 0)
 		message(true);
 }
 _state.copyContent = async (entries, printTarget) => {
@@ -1695,8 +1689,8 @@ _state.copyContent = async (entries, printTarget) => {
 			});
 			success = true;
 
-			/* add the entry preemtively to the list (ensure that a new list is created; the
-			*	copy preserves the modified-time of the source) */
+			/* add the entry preemtively to the list (ensure that a new list is
+			*	created; the copy preserves the modified-time of the source) */
 			const name = dst.substring(dst.lastIndexOf('/') + 1);
 			if (dst == _state.fullPath(name) && _state.list.findIndex((v) => v.name == name) < 0)
 				_state.updateList(_state.list.concat([{ name, kind: 'file', size: fileSize, modified }]));
@@ -1735,8 +1729,6 @@ _state.copyContent = async (entries, printTarget) => {
 	let promises = [], totalFailed = 0, totalSkipped = 0, totalPerformed = 0;
 	for (const entry of totalList) {
 		entry.promise = (async () => {
-			let success = false;
-
 			/* await the parent (before batching to ensure it does not consume a batch-slot) */
 			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
 			if (totalFailed > FILE_MAX_FAILURES)
@@ -1744,6 +1736,7 @@ _state.copyContent = async (entries, printTarget) => {
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
+				let success = false;
 				if (failedParent) {
 					if (totalFailed > FILE_MAX_FAILURES)
 						return false;
@@ -1784,14 +1777,90 @@ _state.copyContent = async (entries, printTarget) => {
 	if (totalPerformed < totalList.length)
 		message('status')(`Aborted due to too many failed copies (Failed: ${totalFailed})`, false);
 	else if (totalFailed > 0)
-		message('status')(`Failed to copy ${totalFailed} entries${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
+		message('status')(`Failed to copy ${totalFailed} ${totalFailed == 1 ? 'entry' : 'entries'}${totalSkipped > 0 ? ` (Skipped: ${totalSkipped})` : ''}`, false);
 	else {
 		message('status')('Successfully copied!', true);
 		message();
 	}
 
 	/* check if all entries failed, in which case the host message does not have any benefit of existing */
-	if (totalFailed == totalList.length)
+	if (totalFailed == totalList.length && totalSkipped == 0)
+		message(true);
+}
+_state.moveContent = async (entries, printTarget) => {
+	if (!_state.config.upload || !_state.config.delete)
+		return _state.pushStaticText('Not allowed to upload and delete content', false);
+	if (entries.length == 0) return;
+	for (const entry of entries)
+		console.log(`Moving [${_state.fullPath(entry.name)}] to [${entry.target}]...`);
+	const basePath = _state.path;
+
+	/* mark the state as busy */
+	++_state.busy;
+
+	/* setup the notification */
+	const message = _state.pushMessage();
+	const caption = message('text');
+	caption(`Move ${entries.length == 1 ? `'${entries[0].name}'` : `${entries.length} objects`} to '${printTarget}'`, `0/${entries.length}`);
+
+	/* iterate over the list and collect the moves */
+	let promises = [], batchState = {}, totalFailed = 0, totalPerformed = 0;
+	for (const entry of entries) {
+		promises.push((async () => {
+			if (totalFailed > FILE_MAX_FAILURES)
+				return;
+
+			/* batch the actual operation (to limit the number of parallel operations;
+			*	silently skip the task if the operation has already failed) */
+			return _state.batch(batchState, async () => {
+				if (totalFailed > FILE_MAX_FAILURES)
+					return false;
+				const update = message('status');
+				update(entry.name);
+
+				try {
+					const tempPath = buildPath(basePath, entry.name);
+					await _state.fs.move(tempPath, entry.target, entry.kind);
+					const name = tempPath.substring(tempPath.lastIndexOf('/') + 1);
+
+					/* check if the object was copied or removed from the current root directory
+					*	and update it preemtively (ensure that a new list is created) */
+					let dirty = false, list = [];
+					if (tempPath == _state.fullPath(name))
+						list = _state.list.filter((v) => { if (v.name != name) return true; dirty = true; return false; });
+					else if (entry.target == _state.fullPath(name))
+						dirty = true, list = _state.list.concat([{ name, kind: entry.kind, size: entry.size, modified: entry.modified }]);
+					if (dirty)
+						_state.updateList(list);
+				}
+				catch (e) {
+					_state.pushStaticTask(`Move '${entry.name}'`, e, false);
+					++totalFailed;
+				}
+				update();
+
+				/* update the overall task counter */
+				caption(null, `${++totalPerformed}/${entries.length}`);
+			});
+		})());
+	}
+	await Promise.all(promises);
+
+	/* clear the busy state */
+	--_state.busy;
+
+	/* log the final status message */
+	if (totalPerformed < entries.length)
+		message('status')(`Aborted due to too many failed moves (Failed: ${totalFailed})`, false);
+	else if (totalFailed > 0)
+		message('status')(`Failed to move ${totalFailed} ${totalFailed == 1 ? 'entry' : 'entries'}`, false);
+	else {
+		message('status')('Successfully moved!', true);
+		message();
+	}
+
+	/* check if all entries failed, in which case the host message does not have any benefit of existing */
+	if (totalFailed == entries.length)
 		message(true);
 }
 _state.setupSocket = (initial) => {

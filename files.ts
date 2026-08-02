@@ -883,6 +883,8 @@ export class FileShare extends mws.ModuleHandler {
 		catch (err: any) {
 			if (err.code == 'ENOENT')
 				client.respondNotFound();
+			else if (kind == 'directory' && err.code == 'EINVAL')
+				client.respondConflict({ message: 'Directory cannot be moved into itself' });
 			else
 				client.respondInternalError(`Failed to move [${filePath}] to [${fileTarget}]: ${err.message}`);
 		}
