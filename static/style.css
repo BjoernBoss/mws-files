@@ -164,17 +164,17 @@
 }
 
 .content .row.selected {
-	background-color: #ac80ff30;
+	background-color: #ac80ff50;
 }
 
 @media (hover: hover) and (pointer: fine) {
 	.main-body:not(.disable-buttons) .content .row.button.selected:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #ac80ff50;
+		background-color: #ac80ff78;
 	}
 }
 
 .main-body:not(.disable-buttons) .content .row.button.selected:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #ac80ff88;
+	background-color: #ac80ffa8;
 }
 
 .content .row+.row {
