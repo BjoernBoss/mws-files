@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { mouseLayout: false, selecting: false, viewStamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
+const _state = { mouseLayout: null, selecting: false, shift: { base: null, last: null }, viewStamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -522,6 +522,12 @@ _state.pushStaticText = (text, status) => {
 		message();
 }
 
+_state.openEntry = (entry) => {
+	if (entry.kind == 'directory')
+		_state.setupContentView(_state.fullPath(entry.name), null, false);
+	else
+		document.location = _state.encodeFilePath(_state.fullPath(entry.name));
+}
 _state.createMenuEntry = () => {
 	const entry = buildElement({ class: 'button option' });
 	entry.appendChild(buildElement({ class: 'icon' }));
@@ -592,6 +598,14 @@ _state.updateOverlay = (name, notify) => {
 	return true;
 }
 _state.showEntriesMenu = (entries) => {
+	/* check if the entire selection should just be opened */
+	if (entries == null) {
+		entries = [];
+		for (const entry of _state.list) {
+			if (entry.selected)
+				entries.push(entry);
+		}
+	}
 	if (entries.length == 0) return;
 	const single = (entries.length == 1 ? entries[0] : null);
 
@@ -644,13 +658,8 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex].children[1].innerText = 'Open';
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
-			if (!validateEntries(true)) return;
-
-			const path = _state.fullPath(single.name);
-			if (single.kind == 'directory')
-				_state.setupContentView(path, null, false);
-			else
-				document.location = _state.encodeFilePath(path);
+			if (validateEntries(true))
+				_state.openEntry(single);
 		};
 	}
 	content.children[entryIndex].children[0].appendChild(_state.loadIcon('Download', 'download'));
@@ -747,7 +756,7 @@ _state.showEntriesMenu = (entries) => {
 				fakeEntry.html.row.scrollIntoView();
 
 				/* clear the previous selection and start editing the new element */
-				_state.updateSelection(true);
+				_state.changeSelection(null, 'clear');
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
 					if (fileName != null && validateEntries(false))
@@ -1033,7 +1042,7 @@ _state.renameAnyEntry = (element, exists, callback) => {
 		if (settled) return false; settled = true;
 
 		if (_state.renaming?.element == element) {
-			document.getElementById('body').classList.remove('disable-buttons');
+			document.getElementById('body').classList.remove('disable-hover');
 			_state.renaming = null;
 		}
 		return exists();
@@ -1069,7 +1078,7 @@ _state.renameAnyEntry = (element, exists, callback) => {
 
 	/* temporarily start editing the single element and hide any button effects */
 	_state.renaming = { element, click: () => updateOperation(true) };
-	document.getElementById('body').classList.add('disable-buttons');
+	document.getElementById('body').classList.add('disable-hover');
 	element.contentEditable = true;
 	element.focus({ preventScroll: true });
 	element.onblur = () => updateOperation(true);
@@ -1100,6 +1109,7 @@ _state.createListEntry = (params, makeAsLink) => {
 
 	/* check if the entry should be created as navigation entry */
 	const entry = row.appendChild(buildElement({ kind: (makeAsLink ? 'a' : 'div'), class: 'entry' }));
+
 	if (makeAsLink)
 		entry.href = _state.encodeFilePath(_state.fullPath(params.name));
 
@@ -1110,11 +1120,11 @@ _state.createListEntry = (params, makeAsLink) => {
 		icon.appendChild(_state.loadIcon('File', 'file'))
 
 	const details = entry.appendChild(buildElement({ class: 'details' }));
-	const name = details.appendChild(buildElement({ class: 'name', text: params.name }));
+	const name = details.appendChild(buildElement({ class: 'name' + (_state.mouseLayout ? ' hoverable' : ''), text: params.name }));
 	const info = details.appendChild(buildElement({ class: 'info' }));
 	const size = info.appendChild(buildElement({ text: '-' }));
 	const date = info.appendChild(buildElement({ text: '-' }));
-	const menu = buildElement({ class: 'button option', child: _state.loadIcon('Menu', 'menu') });
+	const menu = buildElement({ class: 'button option hoverable', child: _state.loadIcon('Menu', 'menu') });
 	const side = row.appendChild(buildElement({ class: 'side', child: menu }));
 
 	return { ...params, selected: false, html: { row, link: entry, name, size, date, side, menu } };
@@ -1167,46 +1177,128 @@ _state.updateList = (content) => {
 		const date = new Date(entry.modified);
 		entry.html.date.innerText = `${date.toLocaleTimeString()} ${date.toLocaleDateString()}`;
 
-		/* patch up the menu button (not affected by different layouts) */
+		/* setup the menu button (not affected by different layouts) */
 		entry.html.menu.onclick = (e) => {
 			e.stopPropagation();
 			if (!_state.selecting)
 				_state.showEntriesMenu([entry]);
 		};
-
-		/* patch the click and right click (only internally redirect clicks for directories) */
-		entry.html.link.onclick = (e) => {
-			if (!_state.mouseLayout && _state.selecting) {
-				entry.selected = !entry.selected;
-				_state.updateSelection(false);
-			}
-			else if (entry.kind == 'directory')
-				_state.setupContentView(_state.fullPath(entry.name), null, false);
-			else
-				return;
-			e.preventDefault();
+		entry.html.menu.oncontextmenu = (e) => {
 			e.stopPropagation();
+			e.preventDefault();
 		};
+
+		/* add the primary right-click behavior */
 		entry.html.row.oncontextmenu = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			if (_state.mouseLayout)
-				_state.showEntriesMenu([entry]);
-			else {
-				entry.selected = !entry.selected;
-				_state.updateSelection(false);
-			}
+			if (!_state.mouseLayout) return;
+
+			if (!entry.selected)
+				_state.changeSelection(entry, 'set');
+			_state.showEntriesMenu(null);
+		};
+		entry.html.link.oncontextmenu = (e) => {
+			if (_state.mouseLayout) return;
+			e.preventDefault();
+			e.stopPropagation();
+			_state.changeSelection(entry, 'toggle');
+		};
+
+		/* add the click handling */
+		entry.html.row.onclick = (e) => {
+			e.stopPropagation();
+			e.preventDefault();
+		};
+		entry.html.row.onmousedown = (e) => {
+			if (e.button != 0) return;
+			e.stopPropagation();
+			if (!_state.mouseLayout) return;
+			e.preventDefault();
+
+			/* update the selection */
+			if (e.ctrlKey)
+				_state.changeSelection(entry, 'toggle');
+			else if (e.shiftKey)
+				_state.changeSelection(entry, 'shift');
+			else
+				_state.changeSelection(entry, 'set');
+		};
+		entry.html.name.onclick = (e) => {
+			if (!_state.mouseLayout) return;
+			e.preventDefault();
+			e.stopPropagation();
+			_state.openEntry(entry);
+		};
+		entry.html.link.onclick = (e) => {
+			if (_state.mouseLayout) return;
+			e.stopPropagation();
+			e.preventDefault();
+
+			if (_state.selecting)
+				_state.changeSelection(entry, 'toggle');
+			else
+				_state.openEntry(entry);
+		};
+
+		/* add the double-click handling */
+		entry.html.row.ondblclick = (e) => {
+			if (!_state.mouseLayout) return;
+			e.preventDefault();
+			e.stopPropagation();
+			_state.openEntry(entry);
+		};
+
+		/* ensure that the entry cannot be focused */
+		entry.html.link.tabIndex = -1;
+		entry.html.link.onfocus = () => {
+			entry.html.link.blur();
 		};
 	}
 	console.log(`content list has been updated to ${_state.list.length} entries...`);
-	_state.updateSelection(false);
+	_state.updateSelection();
 }
-_state.updateSelection = (clear) => {
+_state.changeSelection = (entry, mode) => {
+	/* fetch the index of the entry */
+	const index = (entry == null ? 0 : _state.list.indexOf(entry));
+	if (index < 0) return;
+
+	/* check if the previous selection needs to be cleared */
+	if (mode == 'set' || mode == 'clear') {
+		for (const temp of _state.list)
+			temp.selected = false;
+	}
+
+	/* check if the single entry needs to be updated */
+	if (mode == 'set' || mode == 'toggle')
+		entry.selected = (mode == 'set' ? true : !entry.selected);
+
+	/* check if the shift state needs to be initialized */
+	if (entry == null)
+		_state.shift = { base: null, last: null };
+	else if (_state.shift.base == null || mode != 'shift')
+		_state.shift = { base: index, last: index };
+
+	/* check if this is a shift-click and update all selections accordingly */
+	if (mode == 'shift') {
+		_state.shift.base = Math.min(_state.list.length - 1, _state.shift.base);
+		_state.shift.last = Math.min(_state.list.length - 1, _state.shift.last);
+
+		for (let i = Math.min(_state.shift.last, _state.shift.base); i <= Math.max(_state.shift.last, _state.shift.base); ++i)
+			_state.list[i].selected = false;
+		for (let i = Math.min(index, _state.shift.base); i <= Math.max(index, _state.shift.base); ++i)
+			_state.list[i].selected = true;
+		_state.shift.last = index;
+	}
+
+	/* update the actual selection */
+	_state.updateSelection();
+}
+_state.updateSelection = () => {
 	let count = 0;
 
-	/* either clear the selection or count the number of selected entries and update the selection style */
+	/* count the number of selected entries and update the selection style */
 	for (const entry of _state.list) {
-		if (clear) entry.selected = false;
 		if (entry.selected) {
 			++count;
 			entry.html.row.classList.add('selected');
@@ -1218,9 +1310,9 @@ _state.updateSelection = (clear) => {
 	/* check if this is considered a mutli-selection, in which case the single-menus need to be hidden */
 	_state.selecting = (count > (_state.mouseLayout ? 1 : 0));
 	if (_state.selecting)
-		document.getElementById('content').classList.add('multi-selected');
+		document.getElementById('content').classList.add('selecting');
 	else
-		document.getElementById('content').classList.remove('multi-selected');
+		document.getElementById('content').classList.remove('selecting');
 
 	/* check if the menu button needs to be shown */
 	if (_state.selecting)
@@ -2018,7 +2110,7 @@ _state.setupContentView = async (path, content, update) => {
 	/* allocate the next view stamp and hide the overlays and clear the selection */
 	const viewStamp = ++_state.viewStamp;
 	_state.hideOverlays();
-	_state.updateSelection(true);
+	_state.changeSelection(null, 'clear');
 
 	/* check if the new state needs to be fetched and await its results */
 	let busyView = document.getElementById('content-busy'), fetchError = null;
@@ -2043,7 +2135,7 @@ _state.setupContentView = async (path, content, update) => {
 	if (_state.path == path)
 		return _state.setupPageContext(true);
 	_state.hideOverlays();
-	_state.updateSelection(true);
+	_state.changeSelection(null, 'clear');
 
 	/* check if the path failed to be opened, and the previous path should be kept, and
 	*	otherwise setup the new path and update the history (even in error cases) */
@@ -2087,6 +2179,8 @@ _state.setupContentView = async (path, content, update) => {
 	_state.setupSocket(true);
 }
 _state.setupLayout = (mouse) => {
+	if (_state.mouseLayout == mouse)
+		return;
 	console.log(`Configuring layout to: ${mouse ? 'mouse' : 'touch'}`);
 	_state.mouseLayout = mouse;
 
@@ -2103,13 +2197,25 @@ _state.setupLayout = (mouse) => {
 	}
 
 	/* update the option menu button witdth */
-	if (mouse)
-		document.getElementById('content').classList.remove('wide');
-	else
-		document.getElementById('content').classList.add('wide');
+	if (mouse) {
+		document.getElementById('content').classList.add('mouse');
+		document.getElementById('content').classList.remove('touch');
+	}
+	else {
+		document.getElementById('content').classList.remove('mouse');
+		document.getElementById('content').classList.add('touch');
+	}
+
+	/* toggle the selection list's name's hoverable */
+	for (const entry of _state.list) {
+		if (mouse)
+			entry.html.name.classList.add('hoverable');
+		else
+			entry.html.name.classList.remove('hoverable');
+	}
 
 	/* update the selection (as it differs based on the mode) */
-	_state.updateSelection(false);
+	_state.updateSelection();
 }
 
 window.onload = () => {
@@ -2248,11 +2354,13 @@ window.onload = () => {
 		/* wire up the create buttons */
 		document.getElementById('create-fab').onclick = (e) => {
 			e.stopPropagation();
-			_state.showCreateMenu();
+			if (!_state.selecting)
+				_state.showCreateMenu();
 		};
 		document.getElementById('create-top').onclick = (e) => {
 			e.stopPropagation();
-			_state.showCreateMenu();
+			if (!_state.selecting)
+				_state.showCreateMenu();
 		};
 	}
 
@@ -2304,8 +2412,7 @@ window.onload = () => {
 		e.stopPropagation();
 		e.preventDefault();
 		if (!_state.hideOverlays())
-			_state.updateSelection(true);
-		e.target.blur();
+			_state.changeSelection(null, 'clear');
 	});
 	let clickTarget = null;
 	mainBody.addEventListener('mousedown', (e) => {
@@ -2316,26 +2423,19 @@ window.onload = () => {
 			clickTarget = null;
 	});
 	mainBody.addEventListener('click', (e) => {
-		if (!_state.selecting || e.target != clickTarget) return;
+		if (e.target != clickTarget) return;
 		if (clickTarget.dataset.clearselection != 'true') return;
 		clickTarget = null;
 		e.stopPropagation();
 		e.preventDefault();
-		_state.updateSelection(true);
+		_state.changeSelection(null, 'clear');
 	});
 
 	/* register the multi-menu button handler */
 	document.getElementById('top-menu-button').onclick = (e) => {
 		e.stopPropagation();
-		if (!_state.selecting) return;
-
-		/* collect the selected entries and show the entry menu */
-		const entries = [];
-		for (const entry of _state.list) {
-			if (entry.selected)
-				entries.push(entry);
-		}
-		_state.showEntriesMenu(entries);
+		if (_state.selecting)
+			_state.showEntriesMenu(null);
 	};
 
 	/* register the layout change detection and configure the initial layout */

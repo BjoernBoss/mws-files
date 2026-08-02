@@ -16,9 +16,13 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	--button-animations: 75ms;
+	--button-animations: 50ms;
 	--drop-zone-animations: 200ms;
 	--menu-button-animations: 100ms;
+	--button-fg-hover: inherit;
+	--button-bg-hover: #00000018;
+	--button-fg-pressed: inherit;
+	--button-bg-pressed: #00000030;
 }
 
 .main-body a {
@@ -39,14 +43,13 @@
 	flex: 1;
 }
 
-/* buttons support [disabled] and [toggled] */
 .main-body .button {
 	transition: color var(--button-animations) ease,
 		background-color var(--button-animations) ease;
 	cursor: pointer;
 }
 
-.main-body.disable-buttons .button {
+.main-body.disable-hover .button {
 	cursor: default;
 }
 
@@ -55,27 +58,16 @@
 	color: #a0a0a0;
 }
 
-.button.toggled {
-	background-color: #00000040;
-}
-
 @media (hover: hover) and (pointer: fine) {
-	.main-body:not(.disable-buttons) .button:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #00000018;
+	.main-body:not(.disable-hover) .button:not(.disabled):not(:has(.hoverable:hover)):hover {
+		color: var(--button-fg-hover);
+		background-color: var(--button-bg-hover);
 	}
-
-	.main-body:not(.disable-buttons) .button.toggled:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #00000058;
-	}
-
 }
 
-.main-body:not(.disable-buttons) .button:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #00000030;
-}
-
-.main-body:not(.disable-buttons) .button.toggled:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #00000070;
+.main-body:not(.disable-hover) .button:not(.disabled):not(:has(.hoverable:hover)):active {
+	color: var(--button-fg-pressed);
+	background-color: var(--button-bg-pressed);
 }
 
 .navigation {
@@ -169,18 +161,14 @@
 	border-top: 1px solid transparent;
 }
 
+.content:has(.window.mouse) .row {
+	cursor: default;
+}
+
 .content .row.selected {
 	background-color: #ac80ff50;
-}
-
-@media (hover: hover) and (pointer: fine) {
-	.main-body:not(.disable-buttons) .content .row.button.selected:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #ac80ff78;
-	}
-}
-
-.main-body:not(.disable-buttons) .content .row.button.selected:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #ac80ffa8;
+	--button-bg-hover: #ac80ff78;
+	--button-bg-pressed: #ac80ff78;
 }
 
 .content .row+.row {
@@ -216,7 +204,7 @@
 	font-size: 1.05em;
 	padding: 1px;
 	white-space: nowrap;
-	display: flex;
+	width: max-content;
 }
 
 .content .row .details .name:focus {
@@ -225,6 +213,13 @@
 	border-radius: 4px;
 	padding: 0px;
 	cursor: text;
+	width: 100%;
+}
+
+.main-body:not(.disable-hover) .row .details .name.hoverable:hover:not(:focus) {
+	text-decoration: underline;
+	color: #0015d4;
+	cursor: pointer;
 }
 
 .content .row .details .info {
@@ -246,11 +241,11 @@
 	overflow: hidden;
 }
 
-.content:has(.window.wide) .row .side {
+.content:has(.window.touch) .row .side {
 	width: 3.9em;
 }
 
-.content:has(.window.multi-selected) .row .side {
+.content:has(.window.selecting) .row .side {
 	width: 0;
 	margin-left: 0.75em;
 }
@@ -267,22 +262,14 @@
 	justify-content: center;
 	align-items: center;
 	color: #00000060;
+	--button-fg-hover: #e0e0e0;
+	--button-bg-hover: #00000060;
+	--button-fg-pressed: #ffffff;
+	--button-bg-pressed: #00000080;
 }
 
-.content:has(.window.wide) .row .side .option {
+.content:has(.window.touch) .row .side .option {
 	min-width: 2.4em;
-}
-
-@media (hover: hover) and (pointer: fine) {
-	.main-body:not(.disable-buttons) .content .row .side .option.button:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #00000060;
-		color: #e0e0e0;
-	}
-}
-
-.main-body:not(.disable-buttons) .content .row .side .option.button:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #00000080;
-	color: #ffffff;
 }
 
 .content .empty {
@@ -319,7 +306,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-	.main-body:not(.disable-buttons) .modify:hover {
+	.main-body:not(.disable-hover) .modify:hover {
 		box-shadow: #909090 3.5px 3.5px 3.5px;
 	}
 }
@@ -597,18 +584,10 @@
 
 .menu .option.delete {
 	color: #d04040;
-}
-
-@media (hover: hover) and (pointer: fine) {
-	.main-body:not(.disable-buttons) .menu .option.delete:not(.disabled):hover:not(:has(.button:hover)) {
-		background-color: #d04040;
-		color: #e0e0e0;
-	}
-}
-
-.main-body:not(.disable-buttons) .menu .option.delete:not(.disabled):active:not(:has(.button:hover)) {
-	background-color: #b03030;
-	color: #ffffff;
+	--button-bg-hover: #d04040;
+	--button-fg-hover: #e0e0e0;
+	--button-bg-pressed: #b03030;
+	--button-fg-pressed: #ffffff;
 }
 
 .menu .footer {
