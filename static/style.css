@@ -277,6 +277,7 @@
 	width: 100%;
 	text-align: center;
 	display: none;
+	user-select: none;
 }
 
 .content:has(.window:empty) .empty {
@@ -320,6 +321,17 @@
 }
 
 .modify.selecting {
+	display: none;
+}
+
+.drag-select {
+	position: absolute;
+	border: 2px solid #0060b060;
+	border-radius: 4px;
+	background-color: #e0f0ff60;
+}
+
+.drag-select.hidden {
 	display: none;
 }
 
@@ -393,7 +405,7 @@
 }
 
 .overlay.positioned .context {
-	position: fixed;
+	position: absolute;
 }
 
 .dialog {
@@ -527,6 +539,7 @@
 	width: 100%;
 	text-align: center;
 	display: none;
+	user-select: none;
 }
 
 .menu .body .window:has(.list:empty) .empty {

@@ -16,7 +16,7 @@ const SOCKET_CONNECTION_RETRIES = 3;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
-const _state = { mouseLayout: null, selecting: false, shift: { base: null, last: null }, viewStamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
+const _state = { mouseLayout: null, selecting: false, shift: { base: null, last: null }, drag: null, viewStamp: 0, path: '', list: [], loadedIcons: {}, config: {}, overlay: {}, busy: 0, socket: { ws: null, count: 0, timer: null, message: null, hiddenAutoReconnect: false }, renaming: null };
 
 function buildElement(options) {
 	const e = document.createElement(options?.kind ?? 'div');
@@ -603,9 +603,11 @@ _state.updateOverlay = (name, position, notify) => {
 	/* check if the popup should be positioned */
 	if (!show || position == null)
 		return true;
+	const body = document.getElementById('body').getBoundingClientRect();
+
 	overlay.classList.add('positioned');
-	position.x = Math.max(0, Math.min(position.x + 8, window.innerWidth - element.offsetWidth));
-	position.y = Math.max(0, Math.min(position.y + 8, window.innerHeight - element.offsetHeight));
+	position.x = Math.max(0, Math.min(position.x - body.x + 8, body.width - element.offsetWidth));
+	position.y = Math.max(0, Math.min(position.y - body.y + 8, body.height - element.offsetHeight));
 	element.style.left = `${position.x}px`;
 	element.style.top = `${position.y}px`;
 	return true;
@@ -2235,6 +2237,12 @@ _state.setupLayout = (mouse) => {
 			entry.html.name.classList.remove('hoverable');
 	}
 
+	/* check if any current drag operations need to be terminated */
+	if (_state.drag != null)
+		document.getElementById('body').classList.remove('disable-hover');
+	_state.drag = null;
+	document.getElementById('drag-select').classList.add('hidden');
+
 	/* update the selection (as it differs based on the mode) */
 	_state.updateSelection();
 }
@@ -2465,6 +2473,75 @@ window.onload = () => {
 		e.stopPropagation();
 		if (_state.mouseLayout)
 			_state.showCreateMenu({ x: e.clientX, y: e.clientY });
+	};
+
+	/* register the convenience drag-select handlers */
+	const updateDragRect = (pos) => {
+		const rect = mainBody.getBoundingClientRect();
+		const computeClampedRect = (p0, p1) => {
+			const x = Math.max(0, Math.min(rect.width, p0.x, p1.x));
+			const y = Math.max(0, Math.min(rect.height, p0.y, p1.y));
+			const width = Math.min(rect.width, Math.max(0, p0.x, p1.x)) - x;
+			const height = Math.min(rect.height, Math.max(0, p0.y, p1.y)) - y;
+			return { x, y, width, height };
+		};
+		pos.x -= rect.x, pos.y -= rect.y;
+		if (_state.drag == null)
+			_state.drag = { base: pos, last: pos };
+
+		/* compute the old and new clamped rect */
+		const last = computeClampedRect(_state.drag.base, _state.drag.last);
+		const next = computeClampedRect(_state.drag.base, pos);
+
+		/* update the state and apply the style */
+		_state.drag.last = pos;
+		const style = document.getElementById('drag-select').style;
+		style.left = `${next.x}px`, style.top = `${next.y}px`, style.width = `${next.width}px`, style.height = `${next.height}px`;
+
+		/* clear the list entries within the old selection */
+		for (const entry of _state.list) {
+			const r = entry.html.row.getBoundingClientRect();
+			if (r.bottom > last.y && r.top < last.y + last.height)
+				entry.selected = false;
+		}
+
+		/* update the list entries within the new selection */
+		for (const entry of _state.list) {
+			const r = entry.html.row.getBoundingClientRect();
+			if (r.bottom > next.y && r.top < next.y + next.height)
+				entry.selected = true;
+		}
+		_state.updateSelection();
+	};
+	mainBody.addEventListener('mousedown', (e) => {
+		if (_state.drag != null) {
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}, true);
+	mainBody.addEventListener('contextmenu', (e) => {
+		if (_state.drag != null) {
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}, true);
+	document.getElementById('content').onmousedown = (e) => {
+		e.preventDefault();
+		if (!_state.mouseLayout || e.button != 0) return;
+		document.getElementById('drag-select').classList.remove('hidden');
+		mainBody.classList.add('disable-hover');
+		updateDragRect({ x: e.clientX, y: e.clientY });
+	};
+	document.onmouseup = (e) => {
+		if (e.button != 0) return;
+		document.getElementById('drag-select').classList.add('hidden');
+		if (_state.drag != null)
+			mainBody.classList.remove('disable-hover');
+		_state.drag = null;
+	};
+	document.onmousemove = (e) => {
+		if (_state.mouseLayout && _state.drag != null)
+			updateDragRect({ x: e.clientX, y: e.clientY });
 	};
 
 	/* register the layout change detection and configure the initial layout */
