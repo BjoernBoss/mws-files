@@ -13,6 +13,7 @@ const FILE_COPY_JOB_MAX_POLL_FAILURES = 3;
 const DELAY_UNTIL_SPINNER = 150;
 const DROP_ZONE_ANIMATION = 100;
 const SOCKET_CONNECTION_RETRIES = 3;
+const MOUSE_MOVE_UNTIL_DRAG_PX = 5;
 const SOCKET_RECONNECT_TIMEOUT = 1000;
 const VALID_NAME_REGEX = /^[^\x00-\x1f\x7f/\\\?:\*"<>\|]+$/;
 const UNIT_PREFIX_LIST = [[1_000_000_000_000_000, 'P'], [1_000_000_000_000, 'T'], [1_000_000_000, 'G'], [1_000_000, 'M'], [1_000, 'K'], [1, '']];
@@ -2435,29 +2436,13 @@ window.onload = () => {
 		};
 	}
 
-	/* register convenience handlers for overlays and selection-clearing */
+	/* register key handlers for overlays and selection-clearing */
 	document.addEventListener('keydown', (e) => {
 		if (e.key != 'Escape') return;
 		e.stopPropagation();
 		e.preventDefault();
 		if (!_state.hideOverlays())
 			_state.changeSelection(null, 'clear');
-	});
-	let clickTarget = null;
-	mainBody.addEventListener('mousedown', (e) => {
-		clickTarget = (e.button == 0 ? e.target : null);
-	});
-	mainBody.addEventListener('mouseup', (e) => {
-		if (e.button != 0 || e.target != clickTarget)
-			clickTarget = null;
-	});
-	mainBody.addEventListener('click', (e) => {
-		if (e.target != clickTarget) return;
-		if (clickTarget.dataset.clearselection != 'true') return;
-		clickTarget = null;
-		e.stopPropagation();
-		e.preventDefault();
-		_state.changeSelection(null, 'clear');
 	});
 
 	/* register the multi-menu button handler */
@@ -2475,28 +2460,51 @@ window.onload = () => {
 			_state.showCreateMenu({ x: e.clientX, y: e.clientY });
 	};
 
-	/* register the convenience drag-select handlers */
-	const updateDragRect = (pos) => {
+	/* register the handler for drag-selection and click-select-clearing (they
+	*	work together, as a small click clear, but a click and drag does not) */
+	let clickTarget = null, dragPrimed = null;
+	mainBody.addEventListener('mousedown', (e) => {
+		if (e.button != 0) return;
+		e.preventDefault();
+
+		clickTarget = e.target;
+		dragPrimed = ((_state.mouseLayout && e.target.dataset.background == 'true') ? { x: e.clientX, y: e.clientY } : null);
+	});
+	document.onmousemove = (e) => {
+		if (!_state.mouseLayout)
+			return;
+		const pos = { x: e.clientX, y: e.clientY };
+
+		/* check if a drag should be started */
+		if (_state.drag == null) {
+			if (dragPrimed == null)
+				return;
+			if (Math.min(Math.abs(dragPrimed.x - pos.x), Math.abs(dragPrimed.y - pos.y)) < MOUSE_MOVE_UNTIL_DRAG_PX)
+				return;
+
+			/* configure the drag configuration and clear the click */
+			_state.drag = { base: dragPrimed, last: dragPrimed };
+			document.getElementById('drag-select').classList.remove('hidden');
+			mainBody.classList.add('disable-hover');
+			clickTarget = null;
+		}
+
+		/* fetch the view bounding rectangle and define the clamping-rect helper function */
 		const rect = mainBody.getBoundingClientRect();
 		const computeClampedRect = (p0, p1) => {
-			const x = Math.max(0, Math.min(rect.width, p0.x, p1.x));
-			const y = Math.max(0, Math.min(rect.height, p0.y, p1.y));
-			const width = Math.min(rect.width, Math.max(0, p0.x, p1.x)) - x;
-			const height = Math.min(rect.height, Math.max(0, p0.y, p1.y)) - y;
+			const x = Math.max(rect.left, Math.min(rect.right, p0.x, p1.x));
+			const y = Math.max(rect.top, Math.min(rect.bottom, p0.y, p1.y));
+			const width = Math.min(rect.right, Math.max(rect.left, p0.x, p1.x)) - x;
+			const height = Math.min(rect.bottom, Math.max(rect.top, p0.y, p1.y)) - y;
 			return { x, y, width, height };
 		};
-		pos.x -= rect.x, pos.y -= rect.y;
-		if (_state.drag == null)
-			_state.drag = { base: pos, last: pos };
 
-		/* compute the old and new clamped rect */
+		/* compute the old and new clamped rect and update the state and style */
 		const last = computeClampedRect(_state.drag.base, _state.drag.last);
 		const next = computeClampedRect(_state.drag.base, pos);
-
-		/* update the state and apply the style */
 		_state.drag.last = pos;
 		const style = document.getElementById('drag-select').style;
-		style.left = `${next.x}px`, style.top = `${next.y}px`, style.width = `${next.width}px`, style.height = `${next.height}px`;
+		style.left = `${next.x - rect.x}px`, style.top = `${next.y - rect.y}px`, style.width = `${next.width}px`, style.height = `${next.height}px`;
 
 		/* clear the list entries within the old selection */
 		for (const entry of _state.list) {
@@ -2513,36 +2521,48 @@ window.onload = () => {
 		}
 		_state.updateSelection();
 	};
+	document.onmouseup = (e) => {
+		if (e.button != 0) return;
+
+		/* reset any click-targets, if the target has changed */
+		if (e.target != clickTarget)
+			clickTarget = null;
+
+		/* reset any current dragging */
+		document.getElementById('drag-select').classList.add('hidden');
+		if (_state.drag != null)
+			mainBody.classList.remove('disable-hover');
+		_state.drag = null, dragPrimed = null;
+	};
+	mainBody.addEventListener('click', (e) => {
+		if (e.target != clickTarget) return;
+		if (clickTarget.dataset.background != 'true') return;
+		clickTarget = null;
+		e.stopPropagation();
+		e.preventDefault();
+		_state.changeSelection(null, 'clear');
+	});
 	mainBody.addEventListener('mousedown', (e) => {
+		/* consume any mouse-events while dragging */
+		if (_state.drag != null) {
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}, true);
+	mainBody.addEventListener('click', (e) => {
+		/* consume any mouse-events while dragging */
 		if (_state.drag != null) {
 			e.preventDefault();
 			e.stopPropagation();
 		}
 	}, true);
 	mainBody.addEventListener('contextmenu', (e) => {
+		/* consume any mouse-events while dragging */
 		if (_state.drag != null) {
 			e.preventDefault();
 			e.stopPropagation();
 		}
 	}, true);
-	document.getElementById('content').onmousedown = (e) => {
-		e.preventDefault();
-		if (!_state.mouseLayout || e.button != 0) return;
-		document.getElementById('drag-select').classList.remove('hidden');
-		mainBody.classList.add('disable-hover');
-		updateDragRect({ x: e.clientX, y: e.clientY });
-	};
-	document.onmouseup = (e) => {
-		if (e.button != 0) return;
-		document.getElementById('drag-select').classList.add('hidden');
-		if (_state.drag != null)
-			mainBody.classList.remove('disable-hover');
-		_state.drag = null;
-	};
-	document.onmousemove = (e) => {
-		if (_state.mouseLayout && _state.drag != null)
-			updateDragRect({ x: e.clientX, y: e.clientY });
-	};
 
 	/* register the layout change detection and configure the initial layout */
 	const layoutListener = matchMedia('(pointer: fine) and (hover: hover)');
