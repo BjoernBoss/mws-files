@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 Bjoern Boss Henrichsen */
 
 const REMOVE_NOTIFICATION_ANIMATION = 35;
-const TRANSITION_OVERLAY_ANIMATION = 30;
+const TRANSITION_OVERLAY_ANIMATION = 25;
 const FADE_NOTIFICATION_ANIMATION = 3000;
 const FILE_MAX_FAILURES = 12;
 const FILE_OPERATION_BATCH_SIZE = 3;
@@ -549,13 +549,14 @@ _state.updateMenuLength = (element, length) => {
 _state.hideOverlays = (skip) => {
 	let hidden = false;
 	for (const name of ['menu', 'pick', 'remove']) {
-		if (name != skip && _state.updateOverlay(`${name}-overlay`, null))
+		if (name != skip && _state.updateOverlay(`${name}-overlay`, null, null))
 			hidden = true;
 	}
 	return hidden;
 }
-_state.updateOverlay = (name, notify) => {
+_state.updateOverlay = (name, position, notify) => {
 	const overlay = document.getElementById(name);
+	const element = overlay.children[0];
 
 	/* hide all other overlays */
 	if (notify != null)
@@ -582,22 +583,34 @@ _state.updateOverlay = (name, notify) => {
 		*	ensure overlayed show/hide's finalize with the proper result */
 		overlay.animate([
 			{ opacity: '0', easing: 'ease-out' }, { opacity: '1' }
-		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.remove('hidden');
-		overlay.children[0].animate([
-			{ transform: 'translateY(-20%)', easing: 'ease-out' }, { transform: 'translateY(0)' }
+		], TRANSITION_OVERLAY_ANIMATION);
+		element.animate([
+			{ transform: 'translateY(-15%)', easing: 'ease-out' }, { transform: 'translateY(0)' }
 		], TRANSITION_OVERLAY_ANIMATION);
 	}
 	else {
 		overlay.animate([
 			{ opacity: '1', easing: 'ease-in' }, { opacity: '0' }
-		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => overlay.classList.add('hidden');
-		overlay.children[0].animate([
-			{ transform: 'translateY(0)', easing: 'ease-in' }, { transform: 'translateY(-20%)' }
+		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => {
+			overlay.classList.add('hidden');
+			overlay.classList.remove('positioned');
+		};
+		element.animate([
+			{ transform: 'translateY(0)', easing: 'ease-in' }, { transform: 'translateY(-15%)' }
 		], TRANSITION_OVERLAY_ANIMATION);
 	}
+
+	/* check if the popup should be positioned */
+	if (!show || position == null)
+		return true;
+	overlay.classList.add('positioned');
+	position.x = Math.max(0, Math.min(position.x + 8, window.innerWidth - element.offsetWidth));
+	position.y = Math.max(0, Math.min(position.y + 8, window.innerHeight - element.offsetHeight));
+	element.style.left = `${position.x}px`;
+	element.style.top = `${position.y}px`;
 	return true;
 }
-_state.showEntriesMenu = (entries) => {
+_state.showEntriesMenu = (entries, position) => {
 	/* check if the entire selection should just be opened */
 	if (entries == null) {
 		entries = [];
@@ -648,7 +661,7 @@ _state.showEntriesMenu = (entries) => {
 			_state.pushStaticText(`${dropped} objects do not exist anymore`, false);
 
 		if (!settled)
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 		return false;
 	};
 
@@ -667,7 +680,7 @@ _state.showEntriesMenu = (entries) => {
 	content.children[entryIndex++].onclick = (e) => {
 		e.stopPropagation();
 		if (!validateEntries(true)) return;
-		_state.updateOverlay('menu-overlay', null);
+		_state.updateOverlay('menu-overlay', null, null);
 
 		/* request the actual download of the content */
 		for (const entry of entries) {
@@ -686,7 +699,7 @@ _state.showEntriesMenu = (entries) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
 
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(single.name)), document.location).href)
 				.then(() => _state.pushStaticText('Copied to clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
@@ -700,7 +713,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 
 			/* start renaming the element */
 			_state.renameAnyEntry(single.html.name, () => validateEntries(false), async (fileName) => {
@@ -731,7 +744,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 			_state.showMoveCopyPicker(false, single, (path) => {
 				if (!validateEntries(false)) return;
 
@@ -771,7 +784,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 			_state.showMoveCopyPicker(true, false, async (path) => {
 				if (!validateEntries(false)) return;
 
@@ -790,7 +803,7 @@ _state.showEntriesMenu = (entries) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null);
+			_state.updateOverlay('menu-overlay', null, null);
 
 			/* ask the user if the deletion should actually be performed */
 			_state.showDeleteConfirm(single == null ? entries.map((v) => v.name).join('\n') : _state.fullPath(single.name), () => {
@@ -801,9 +814,9 @@ _state.showEntriesMenu = (entries) => {
 	}
 
 	/* show the actual menu */
-	_state.updateOverlay('menu-overlay', () => { settled = true; });
+	_state.updateOverlay('menu-overlay', position, () => { settled = true; });
 }
-_state.showCreateMenu = () => {
+_state.showCreateMenu = (position) => {
 	if (!_state.config.upload)
 		return _state.pushStaticText('Not allowed to upload content', false);
 
@@ -833,7 +846,7 @@ _state.showCreateMenu = () => {
 
 	/* show the actual menu */
 	let settled = false;
-	_state.updateOverlay('menu-overlay', () => { settled = true; });
+	_state.updateOverlay('menu-overlay', position, () => { settled = true; });
 
 	/* wire up the corresponding click logic */
 	const processInputFiles = (input, directory) => {
@@ -851,7 +864,7 @@ _state.showCreateMenu = () => {
 	content.children[0].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null);
+		_state.updateOverlay('menu-overlay', null, null);
 
 		/* create the new fake list to be edited */
 		const entry = _state.createListEntry({ name: '', kind: 'directory' }, false);
@@ -867,7 +880,7 @@ _state.showCreateMenu = () => {
 	content.children[1].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null);
+		_state.updateOverlay('menu-overlay', null, null);
 
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -878,7 +891,7 @@ _state.showCreateMenu = () => {
 	content.children[2].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null);
+		_state.updateOverlay('menu-overlay', null, null);
 
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -962,7 +975,7 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 		confirm.onclick = (disabled ? null : (e) => {
 			e.stopPropagation();
 			if (settled) return;
-			_state.updateOverlay('pick-overlay', null);
+			_state.updateOverlay('pick-overlay', null, null);
 			callback(path);
 		});
 
@@ -1017,7 +1030,7 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 
 	/* construct the initial list and show the actual menu */
 	updateView(_state.path);
-	_state.updateOverlay('pick-overlay', () => {
+	_state.updateOverlay('pick-overlay', null, () => {
 		settled = true;
 		cancelTask();
 		clearBusy();
@@ -1030,11 +1043,11 @@ _state.showDeleteConfirm = (message, callback) => {
 	document.getElementById('remove-confirm').onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('remove-overlay', null);
+		_state.updateOverlay('remove-overlay', null, null);
 		callback();
 	};
 
-	_state.updateOverlay('remove-overlay', () => { settled = true; });
+	_state.updateOverlay('remove-overlay', null, () => { settled = true; });
 }
 _state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
@@ -1181,7 +1194,7 @@ _state.updateList = (content) => {
 		entry.html.menu.onclick = (e) => {
 			e.stopPropagation();
 			if (!_state.selecting)
-				_state.showEntriesMenu([entry]);
+				_state.showEntriesMenu([entry], null);
 		};
 		entry.html.menu.oncontextmenu = (e) => {
 			e.stopPropagation();
@@ -1196,7 +1209,7 @@ _state.updateList = (content) => {
 
 			if (!entry.selected)
 				_state.changeSelection(entry, 'set');
-			_state.showEntriesMenu(null);
+			_state.showEntriesMenu(null, { x: e.clientX, y: e.clientY });
 		};
 		entry.html.link.oncontextmenu = (e) => {
 			if (_state.mouseLayout) return;
@@ -1242,6 +1255,14 @@ _state.updateList = (content) => {
 		};
 
 		/* add the double-click handling */
+		entry.html.name.ondblclick = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		};
+		entry.html.menu.ondblclick = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		};
 		entry.html.row.ondblclick = (e) => {
 			if (!_state.mouseLayout) return;
 			e.preventDefault();
@@ -2355,12 +2376,12 @@ window.onload = () => {
 		document.getElementById('create-fab').onclick = (e) => {
 			e.stopPropagation();
 			if (!_state.selecting)
-				_state.showCreateMenu();
+				_state.showCreateMenu(null);
 		};
 		document.getElementById('create-top').onclick = (e) => {
 			e.stopPropagation();
 			if (!_state.selecting)
-				_state.showCreateMenu();
+				_state.showCreateMenu(null);
 		};
 	}
 
@@ -2398,11 +2419,11 @@ window.onload = () => {
 		overlay.onmousedown = (e) => {
 			e.stopPropagation();
 			e.preventDefault();
-			_state.updateOverlay(`${name}-overlay`, null);
+			_state.updateOverlay(`${name}-overlay`, null, null);
 		};
 		document.getElementById(`${name}-abort`).onclick = (e) => {
 			e.stopPropagation();
-			_state.updateOverlay(`${name}-overlay`, null);
+			_state.updateOverlay(`${name}-overlay`, null, null);
 		};
 	}
 
@@ -2436,6 +2457,14 @@ window.onload = () => {
 		e.stopPropagation();
 		if (_state.selecting)
 			_state.showEntriesMenu(null);
+	};
+
+	/* register the convenience right-click background create dialog */
+	document.getElementById('content').oncontextmenu = (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		if (_state.mouseLayout)
+			_state.showCreateMenu({ x: e.clientX, y: e.clientY });
 	};
 
 	/* register the layout change detection and configure the initial layout */
