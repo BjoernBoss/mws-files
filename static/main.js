@@ -547,63 +547,63 @@ _state.updateMenuLength = (element, length) => {
 	while (element.children.length < length)
 		element.appendChild(_state.createMenuEntry());
 }
-_state.hideOverlays = (skip) => {
+_state.hideAllOverlays = (skip) => {
 	let hidden = false;
 	for (const name of ['menu', 'pick', 'remove']) {
-		if (name != skip && _state.updateOverlay(`${name}-overlay`, null, null))
+		if (name != skip && _state.hideOverlay(`${name}-overlay`))
 			hidden = true;
 	}
 	return hidden;
 }
-_state.updateOverlay = (name, position, notify) => {
+_state.hideOverlay = (name) => {
+	const overlay = document.getElementById(name);
+	const element = overlay.children[0];
+
+	/* check if the overlay is already hidden */
+	if (!(name in _state.overlay))
+		return false;
+
+	/* notify the overlay about being hidden */
+	_state.overlay[name]();
+	delete _state.overlay[name];
+
+	/* manually animate the hiding due to changing the display type (set the class-style again after
+	*	finishing the animation, to ensure overlayed show/hide's finalize with the proper result) */
+	overlay.animate([
+		{ opacity: '1', easing: 'ease-in' }, { opacity: '0' }
+	], TRANSITION_OVERLAY_ANIMATION).onfinish = () => {
+		overlay.classList.add('hidden');
+		overlay.classList.remove('positioned');
+	};
+	element.animate([
+		{ transform: 'translateY(0)', easing: 'ease-in' }, { transform: 'translateY(-15%)' }
+	], TRANSITION_OVERLAY_ANIMATION);
+	return true;
+}
+_state.showOverlay = (name, position, notify) => {
 	const overlay = document.getElementById(name);
 	const element = overlay.children[0];
 
 	/* hide all other overlays */
-	if (notify != null)
-		_state.hideOverlays(name);
+	_state.hideAllOverlays(name);
 
-	/* check if the overlay is already hidden */
-	else if (!(name in _state.overlay))
-		return false;
+	/* check if the previous callback is being replaced */
+	if (name in _state.overlay)
+		_state.overlay[name](false);
+	_state.overlay[name] = notify;
 
-	/* check if a notification callback has been registered and register the next callback */
-	if (name in _state.overlay) {
-		_state.overlay[name]();
-		delete _state.overlay[name];
-	}
-	const show = (notify != null);
-	if (show)
-		_state.overlay[name] = notify;
-
-	/* manually animate, due to changing the display type */
-	if (show) {
-		overlay.classList.remove('hidden');
-
-		/* set the class-style again after finishing the animation, to
-		*	ensure overlayed show/hide's finalize with the proper result */
-		overlay.animate([
-			{ opacity: '0', easing: 'ease-out' }, { opacity: '1' }
-		], TRANSITION_OVERLAY_ANIMATION);
-		element.animate([
-			{ transform: 'translateY(-15%)', easing: 'ease-out' }, { transform: 'translateY(0)' }
-		], TRANSITION_OVERLAY_ANIMATION);
-	}
-	else {
-		overlay.animate([
-			{ opacity: '1', easing: 'ease-in' }, { opacity: '0' }
-		], TRANSITION_OVERLAY_ANIMATION).onfinish = () => {
-			overlay.classList.add('hidden');
-			overlay.classList.remove('positioned');
-		};
-		element.animate([
-			{ transform: 'translateY(0)', easing: 'ease-in' }, { transform: 'translateY(-15%)' }
-		], TRANSITION_OVERLAY_ANIMATION);
-	}
+	/* manually animate the showing, due to changing the display type */
+	overlay.classList.remove('hidden');
+	overlay.animate([
+		{ opacity: '0', easing: 'ease-out' }, { opacity: '1' }
+	], TRANSITION_OVERLAY_ANIMATION);
+	element.animate([
+		{ transform: 'translateY(-15%)', easing: 'ease-out' }, { transform: 'translateY(0)' }
+	], TRANSITION_OVERLAY_ANIMATION);
 
 	/* check if the popup should be positioned */
-	if (!show || position == null)
-		return true;
+	if (position == null)
+		return;
 	const body = document.getElementById('body').getBoundingClientRect();
 
 	overlay.classList.add('positioned');
@@ -611,7 +611,6 @@ _state.updateOverlay = (name, position, notify) => {
 	position.y = Math.max(0, Math.min(position.y - body.y + 8, body.height - element.offsetHeight));
 	element.style.left = `${position.x}px`;
 	element.style.top = `${position.y}px`;
-	return true;
 }
 _state.showEntriesMenu = (entries, position) => {
 	/* check if the entire selection should just be opened */
@@ -664,7 +663,7 @@ _state.showEntriesMenu = (entries, position) => {
 			_state.pushStaticText(`${dropped} objects do not exist anymore`, false);
 
 		if (!settled)
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 		return false;
 	};
 
@@ -683,7 +682,7 @@ _state.showEntriesMenu = (entries, position) => {
 	content.children[entryIndex++].onclick = (e) => {
 		e.stopPropagation();
 		if (!validateEntries(true)) return;
-		_state.updateOverlay('menu-overlay', null, null);
+		_state.hideOverlay('menu-overlay');
 
 		/* request the actual download of the content */
 		for (const entry of entries) {
@@ -702,7 +701,7 @@ _state.showEntriesMenu = (entries, position) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
 
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 			navigator.clipboard.writeText(new URL(_state.encodeFilePath(_state.fullPath(single.name)), document.location).href)
 				.then(() => _state.pushStaticText('Copied to clipboard!', true))
 				.catch(() => _state.pushStaticText('Failed writing to clipboard', false));
@@ -716,7 +715,7 @@ _state.showEntriesMenu = (entries, position) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 
 			/* start renaming the element */
 			_state.renameAnyEntry(single.html.name, () => validateEntries(false), async (fileName) => {
@@ -747,7 +746,7 @@ _state.showEntriesMenu = (entries, position) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 			_state.showMoveCopyPicker(false, single, (path) => {
 				if (!validateEntries(false)) return;
 
@@ -787,7 +786,7 @@ _state.showEntriesMenu = (entries, position) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 			_state.showMoveCopyPicker(true, false, async (path) => {
 				if (!validateEntries(false)) return;
 
@@ -806,10 +805,10 @@ _state.showEntriesMenu = (entries, position) => {
 		content.children[entryIndex++].onclick = (e) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
-			_state.updateOverlay('menu-overlay', null, null);
+			_state.hideOverlay('menu-overlay');
 
 			/* ask the user if the deletion should actually be performed */
-			_state.showDeleteConfirm(single == null ? entries.map((v) => v.name).join('\n') : _state.fullPath(single.name), () => {
+			_state.showDeleteConfirm(single == null ? entries.map((v) => _state.fullPath(v.name)).join('\n') : _state.fullPath(single.name), () => {
 				if (validateEntries(false))
 					_state.removeContent(entries);
 			});
@@ -817,7 +816,7 @@ _state.showEntriesMenu = (entries, position) => {
 	}
 
 	/* show the actual menu */
-	_state.updateOverlay('menu-overlay', position, () => { settled = true; });
+	_state.showOverlay('menu-overlay', position, () => { settled = true; });
 }
 _state.showCreateMenu = (position) => {
 	if (!_state.config.upload)
@@ -849,7 +848,7 @@ _state.showCreateMenu = (position) => {
 
 	/* show the actual menu */
 	let settled = false;
-	_state.updateOverlay('menu-overlay', position, () => { settled = true; });
+	_state.showOverlay('menu-overlay', position, () => { settled = true; });
 
 	/* wire up the corresponding click logic */
 	const processInputFiles = (input, directory) => {
@@ -867,7 +866,7 @@ _state.showCreateMenu = (position) => {
 	content.children[0].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null, null);
+		_state.hideOverlay('menu-overlay');
 
 		/* create the new fake list to be edited */
 		const entry = _state.createListEntry({ name: '', kind: 'directory' }, false);
@@ -883,7 +882,7 @@ _state.showCreateMenu = (position) => {
 	content.children[1].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null, null);
+		_state.hideOverlay('menu-overlay');
 
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -894,7 +893,7 @@ _state.showCreateMenu = (position) => {
 	content.children[2].onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('menu-overlay', null, null);
+		_state.hideOverlay('menu-overlay');
 
 		const input = document.createElement('input');
 		input.type = 'file';
@@ -922,7 +921,14 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 	const fetched = { [_state.path]: baseList.sort() };
 
 	/* setup helper functions for the dialog */
-	let settled = false, busyTimer = null, cancelTask = () => { }, batchState = {};
+	let settled = false, busyTimer = null, cancelTask = () => { }, batchState = {}, confirmLastPick = () => { };
+	const confirmPick = (path) => {
+		if (settled) return; settled = true;
+		cancelTask();
+		clearBusy();
+		_state.hideOverlay('pick-overlay');
+		callback(path);
+	};
 	const markAsBusy = () => {
 		if (busyTimer != null) return;
 		busyTimer = setTimeout(() => {
@@ -976,11 +982,11 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 		else
 			confirm.classList.remove('disabled');
 		confirm.onclick = (disabled ? null : (e) => {
-			e.stopPropagation();
 			if (settled) return;
-			_state.updateOverlay('pick-overlay', null, null);
-			callback(path);
+			e.stopPropagation();
+			confirmPick(path);
 		});
+		confirmLastPick = (disabled ? () => { } : () => confirmPick(path));
 
 		/* construct the actual entries */
 		_state.updateMenuLength(content, directories.length);
@@ -1031,9 +1037,17 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 		};
 	};
 
+	/* convenience enter-accept */
+	document.onkeydown = (e) => {
+		if (e.key != 'Enter' || settled) return;
+		e.stopPropagation();
+		e.preventDefault();
+		confirmLastPick();
+	};
+
 	/* construct the initial list and show the actual menu */
 	updateView(_state.path);
-	_state.updateOverlay('pick-overlay', null, () => {
+	_state.showOverlay('pick-overlay', null, (confirm) => {
 		settled = true;
 		cancelTask();
 		clearBusy();
@@ -1046,11 +1060,19 @@ _state.showDeleteConfirm = (message, callback) => {
 	document.getElementById('remove-confirm').onclick = (e) => {
 		e.stopPropagation();
 		if (settled) return;
-		_state.updateOverlay('remove-overlay', null, null);
+		_state.hideOverlay('remove-overlay');
+		callback();
+	};
+	document.onkeydown = (e) => {
+		if (e.key != 'Enter' || settled) return;
+		e.stopPropagation();
+		e.preventDefault();
+		settled = true;
+		_state.hideOverlay('remove-overlay');
 		callback();
 	};
 
-	_state.updateOverlay('remove-overlay', null, () => { settled = true; });
+	_state.showOverlay('remove-overlay', null, () => { settled = true; });
 }
 _state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
@@ -2133,7 +2155,7 @@ _state.setupContentView = async (path, content, update) => {
 
 	/* allocate the next view stamp and hide the overlays and clear the selection */
 	const viewStamp = ++_state.viewStamp;
-	_state.hideOverlays();
+	_state.hideAllOverlays(null);
 	_state.changeSelection(null, 'clear');
 
 	/* check if the new state needs to be fetched and await its results */
@@ -2158,7 +2180,7 @@ _state.setupContentView = async (path, content, update) => {
 	busyView.classList.add('hidden');
 	if (_state.path == path)
 		return _state.setupPageContext(true);
-	_state.hideOverlays();
+	_state.hideAllOverlays(null);
 	_state.changeSelection(null, 'clear');
 
 	/* check if the path failed to be opened, and the previous path should be kept, and
@@ -2428,11 +2450,11 @@ window.onload = () => {
 		overlay.onmousedown = (e) => {
 			e.stopPropagation();
 			e.preventDefault();
-			_state.updateOverlay(`${name}-overlay`, null, null);
+			_state.hideOverlay(`${name}-overlay`);
 		};
 		document.getElementById(`${name}-abort`).onclick = (e) => {
 			e.stopPropagation();
-			_state.updateOverlay(`${name}-overlay`, null, null);
+			_state.hideOverlay(`${name}-overlay`);
 		};
 	}
 
@@ -2441,7 +2463,7 @@ window.onload = () => {
 		if (e.key != 'Escape') return;
 		e.stopPropagation();
 		e.preventDefault();
-		if (!_state.hideOverlays())
+		if (!_state.hideAllOverlays(null))
 			_state.changeSelection(null, 'clear');
 	});
 
