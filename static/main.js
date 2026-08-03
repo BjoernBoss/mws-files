@@ -612,6 +612,24 @@ _state.showOverlay = (name, position, notify) => {
 	element.style.left = `${position.x}px`;
 	element.style.top = `${position.y}px`;
 }
+_state.validateEntryList = (entries) => {
+	let dropped = 0, droppedName = '';
+
+	/* check if any of the entires has been removed */
+	for (const entry of entries) {
+		if (_state.list.indexOf(entry) >= 0)
+			continue;
+		++dropped, droppedName = entry.name;
+	}
+	if (dropped == 0)
+		return true;
+
+	if (dropped == 1)
+		_state.pushStaticText(`'${droppedName}' does not exist anymore`, false);
+	else
+		_state.pushStaticText(`${dropped} objects do not exist anymore`, false);
+	return false;
+}
 _state.showEntriesMenu = (entries, position) => {
 	/* check if the entire selection should just be opened */
 	if (entries == null) {
@@ -646,22 +664,8 @@ _state.showEntriesMenu = (entries, position) => {
 	let settled = false, entryIndex = 0;
 	const validateEntries = (checkSettled) => {
 		if (checkSettled && settled) return false;
-
-		/* check if any of the entires has been removed */
-		let dropped = 0, droppedName = '';
-		for (const entry of entries) {
-			if (_state.list.indexOf(entry) >= 0)
-				continue;
-			++dropped, droppedName = entry.name;
-		}
-		if (dropped == 0)
+		if (_state.validateEntryList(entries))
 			return true;
-
-		if (dropped == 1)
-			_state.pushStaticText(`'${droppedName}' does not exist anymore`, false);
-		else
-			_state.pushStaticText(`${dropped} objects do not exist anymore`, false);
-
 		if (!settled)
 			_state.hideOverlay('menu-overlay');
 		return false;
@@ -775,7 +779,7 @@ _state.showEntriesMenu = (entries, position) => {
 				_state.renameAnyEntry(fakeEntry.html.name, () => true, (fileName) => {
 					fakeEntry.html.row.remove();
 					if (fileName != null && validateEntries(false))
-						_state.copyContent({ kind: single.kind, name: single.name, size: single.size, modified: single.modified, target: _state.fullPath(fileName) }, fileName);
+						_state.copyContent([{ kind: single.kind, name: single.name, size: single.size, modified: single.modified, target: _state.fullPath(fileName) }], fileName);
 				});
 			});
 		};
@@ -806,12 +810,7 @@ _state.showEntriesMenu = (entries, position) => {
 			e.stopPropagation();
 			if (!validateEntries(true)) return;
 			_state.hideOverlay('menu-overlay');
-
-			/* ask the user if the deletion should actually be performed */
-			_state.showDeleteConfirm(single == null ? entries.map((v) => _state.fullPath(v.name)).join('\n') : _state.fullPath(single.name), () => {
-				if (validateEntries(false))
-					_state.removeContent(entries);
-			});
+			_state.showDeleteConfirm(entries);
 		};
 	}
 
@@ -1053,15 +1052,18 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 		clearBusy();
 	});
 }
-_state.showDeleteConfirm = (message, callback) => {
-	document.getElementById('remove-name').innerText = message;
+_state.showDeleteConfirm = (entries) => {
+	if (entries.length == 0)
+		return;
+	document.getElementById('remove-name').innerText = entries.map((v) => _state.fullPath(v.name)).join('\n');
 
 	let settled = false;
 	document.getElementById('remove-confirm').onclick = (e) => {
 		e.stopPropagation();
-		if (settled) return;
+		if (settled) return; settled = true;
 		_state.hideOverlay('remove-overlay');
-		callback();
+		if (_state.validateEntryList(entries))
+			_state.removeContent(entries);
 	};
 	document.onkeydown = (e) => {
 		if (e.key != 'Enter' || settled) return;
@@ -1069,7 +1071,8 @@ _state.showDeleteConfirm = (message, callback) => {
 		e.preventDefault();
 		settled = true;
 		_state.hideOverlay('remove-overlay');
-		callback();
+		if (_state.validateEntryList(entries))
+			_state.removeContent(entries);
 	};
 
 	_state.showOverlay('remove-overlay', null, () => { settled = true; });
@@ -2465,6 +2468,16 @@ window.onload = () => {
 		e.preventDefault();
 		if (!_state.hideAllOverlays(null))
 			_state.changeSelection(null, 'clear');
+	});
+
+	/* register convenience handlers for keyboard deletion */
+	if (_state.config.delete) document.addEventListener('keydown', (e) => {
+		if (e.key != 'Delete') return;
+		const entries = _state.list.filter((e) => e.selected);
+		if (entries.length == 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		_state.showDeleteConfirm(entries);
 	});
 
 	/* register the multi-menu button handler */
