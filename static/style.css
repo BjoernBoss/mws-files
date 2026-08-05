@@ -147,6 +147,7 @@
 	height: 100%;
 	border-top: 1px solid #00000030;
 	padding-top: 1em;
+	user-select: none;
 }
 
 .content .window {
@@ -187,7 +188,6 @@
 }
 
 .content .row .icon {
-	user-select: none;
 	min-width: 1.2em;
 }
 
@@ -255,7 +255,6 @@
 	padding: 1px;
 	border: 1px solid;
 	border-radius: 3px;
-	user-select: none;
 	min-width: 1.6em;
 	height: 1.6em;
 	display: flex;
@@ -277,7 +276,6 @@
 	width: 100%;
 	text-align: center;
 	display: none;
-	user-select: none;
 }
 
 .content:has(.window:empty) .empty {
@@ -539,7 +537,6 @@
 	width: 100%;
 	text-align: center;
 	display: none;
-	user-select: none;
 }
 
 .menu .body .window:has(.list:empty) .empty {

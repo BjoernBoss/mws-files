@@ -31,7 +31,7 @@
 		"prepare": "tsc"
 	},
 	"dependencies": {
-		"@bjoernboss/mws": "^1.3.0"
+		"@bjoernboss/mws": "^1.4.0"
 	},
 	"devDependencies": {
 		"@types/node": "^25.6.0",
