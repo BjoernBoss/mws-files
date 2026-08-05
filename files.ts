@@ -449,6 +449,7 @@ export const Endpoints = {
 
 /**
  *	The FileShare caches path reservations and copy jobs internally, no two shares should be mapped to the same directory at the same time.
+ *	Note: file path handling is not case-insensitivity aware.
  */
 export class FileShare extends mws.ModuleHandler {
 	private fileStorage: (path: string) => string;
@@ -661,16 +662,21 @@ export class FileShare extends mws.ModuleHandler {
 	private async fetchDirectoryList(filePath: string): Promise<Record<string, DirEntry>> {
 		const out: Record<string, DirEntry> = {};
 
-		/* collect all of the meta data about the directory (let errors propagate out; silently ignore errors) */
+		/* collect all of the meta data about the directory (let errors propagate out; silently ignore
+		*	errors; skip externally created names, which are not addressable through the module anyway) */
 		for (const name of await libFsPromises.readdir(filePath)) {
 			const childPath = `${filePath}/${name}`;
+			if (!name.match(VALID_NAME_REGEX)) {
+				this.warning(`Unsupported file-system name encountered: ${childPath}`);
+				continue;
+			}
 			try {
 				const stats = await libFsPromises.stat(childPath);
 
 				if (stats.isFile())
 					out[name] = { kind: 'file', size: stats.size, modified: stats.mtimeMs };
 				else if (stats.isDirectory())
-					out[name] = { kind: 'directory', size: (await libFsPromises.readdir(childPath)).length, modified: stats.mtimeMs };
+					out[name] = { kind: 'directory', size: (await libFsPromises.readdir(childPath)).filter((child) => child.match(VALID_NAME_REGEX)).length, modified: stats.mtimeMs };
 				else
 					this.warning(`Unsupported file-system object encountered: ${childPath}`);
 			}
@@ -1038,7 +1044,7 @@ export class FileShare extends mws.ModuleHandler {
 				/* check if the directory should be served in raw and otherwise create the directory view */
 				if (client.url.searchParams.get('raw') == 'true')
 					return client.respondJson(list, { headers });
-				return this.buildView(client, path, list, params);
+				return this.buildView(client, path, list, params, headers);
 			} catch (err: any) {
 				if (err.code == 'ENOENT')
 					return client.respondNotFound();
@@ -1057,7 +1063,7 @@ export class FileShare extends mws.ModuleHandler {
 	private staticPath(client: mws.ClientRequest, path: string): string {
 		return client.makeImmutable(this.name, mws.joinSanitized(Endpoints.static, path));
 	}
-	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>, params: BurntParams): Promise<void> {
+	private async buildView(client: mws.ClientRequest, path: string, list: Record<string, DirEntry>, params: BurntParams, headers: Record<string, string>): Promise<void> {
 		/* fetch the content of the main view */
 		const fullPath = this.fileAssets('/page.html');
 		let body: string | null = null;
@@ -1114,7 +1120,7 @@ export class FileShare extends mws.ModuleHandler {
 			],
 			body: b.Embed(body, true)
 		});
-		client.respondHtml(page);
+		client.respondHtml(page, { headers });
 	}
 	private acceptWebSocket(client: mws.ClientSocket, path: string): void {
 		/* check if the listener needs to be created (path will already be fully expanded) */

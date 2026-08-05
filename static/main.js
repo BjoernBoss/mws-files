@@ -1037,19 +1037,21 @@ _state.showMoveCopyPicker = (move, self, callback) => {
 	};
 
 	/* convenience enter-accept */
-	document.onkeydown = (e) => {
+	const keyListener = (e) => {
 		if (e.key != 'Enter' || settled) return;
 		e.stopPropagation();
 		e.preventDefault();
 		confirmLastPick();
 	};
+	document.addEventListener('keydown', keyListener);
 
 	/* construct the initial list and show the actual menu */
 	updateView(_state.path);
-	_state.showOverlay('pick-overlay', null, (confirm) => {
+	_state.showOverlay('pick-overlay', null, () => {
 		settled = true;
 		cancelTask();
 		clearBusy();
+		document.removeEventListener('keydown', keyListener);
 	});
 }
 _state.showDeleteConfirm = (entries) => {
@@ -1058,24 +1060,30 @@ _state.showDeleteConfirm = (entries) => {
 	document.getElementById('remove-name').innerText = entries.map((v) => _state.fullPath(v.name)).join('\n');
 
 	let settled = false;
-	document.getElementById('remove-confirm').onclick = (e) => {
-		e.stopPropagation();
+	const confirmRemove = () => {
 		if (settled) return; settled = true;
 		_state.hideOverlay('remove-overlay');
 		if (_state.validateEntryList(entries))
 			_state.removeContent(entries);
 	};
-	document.onkeydown = (e) => {
+
+	/* convenience enter-accept */
+	const keyListener = (e) => {
 		if (e.key != 'Enter' || settled) return;
 		e.stopPropagation();
 		e.preventDefault();
-		settled = true;
-		_state.hideOverlay('remove-overlay');
-		if (_state.validateEntryList(entries))
-			_state.removeContent(entries);
+		confirmRemove();
 	};
+	document.addEventListener('keydown', keyListener);
 
-	_state.showOverlay('remove-overlay', null, () => { settled = true; });
+	document.getElementById('remove-confirm').onclick = (e) => {
+		e.stopPropagation();
+		confirmRemove();
+	};
+	_state.showOverlay('remove-overlay', null, () => {
+		settled = true;
+		document.removeEventListener('keydown', keyListener);
+	});
 }
 _state.renameAnyEntry = (element, exists, callback) => {
 	let settled = false;
@@ -1541,21 +1549,21 @@ _state.uploadContent = async (list, what) => {
 		entry.promise = (async () => {
 			/* await the parent (before batching to ensure it does not consume a batch-slot) */
 			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
-			if (totalFailed > FILE_MAX_FAILURES)
+			if (totalFailed >= FILE_MAX_FAILURES)
 				return false;
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
 				let success = false;
 				if (failedParent) {
-					if (totalFailed > FILE_MAX_FAILURES)
+					if (totalFailed >= FILE_MAX_FAILURES)
 						return false;
 					++totalSkipped;
 				}
 
 				/* perform the actual upload, unless the operation has already failed, in which
 				*	case nothing more will be performed (i.e. just silently skip the task) */
-				else if (totalFailed > FILE_MAX_FAILURES)
+				else if (totalFailed >= FILE_MAX_FAILURES)
 					return false;
 				else {
 					let result = false;
@@ -1674,21 +1682,21 @@ _state.removeContent = async (entries) => {
 				for (const index of entry.children)
 					childrenValid = (childrenValid && await totalList[index].promise);
 			}
-			if (totalFailed > FILE_MAX_FAILURES)
+			if (totalFailed >= FILE_MAX_FAILURES)
 				return false;
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
 				let success = false;
 				if (!childrenValid) {
-					if (totalFailed > FILE_MAX_FAILURES)
+					if (totalFailed >= FILE_MAX_FAILURES)
 						return false;
 					++totalSkipped;
 				}
 
 				/* perform the actual deletion, unless the operation has already failed, in which
 				*	case nothing more will be performed (i.e. just silently skip the task) */
-				else if (totalFailed > FILE_MAX_FAILURES)
+				else if (totalFailed >= FILE_MAX_FAILURES)
 					return false;
 				else {
 					const update = message('status');
@@ -1872,21 +1880,21 @@ _state.copyContent = async (entries, printTarget) => {
 		entry.promise = (async () => {
 			/* await the parent (before batching to ensure it does not consume a batch-slot) */
 			let failedParent = (entry.parent != null && !await totalList[entry.parent].promise);
-			if (totalFailed > FILE_MAX_FAILURES)
+			if (totalFailed >= FILE_MAX_FAILURES)
 				return false;
 
 			/* batch the actual operation (to limit the number of parallel operations) */
 			return _state.batch(batchState, async () => {
 				let success = false;
 				if (failedParent) {
-					if (totalFailed > FILE_MAX_FAILURES)
+					if (totalFailed >= FILE_MAX_FAILURES)
 						return false;
 					++totalSkipped;
 				}
 
 				/* perform the actual copy, unless the operation has already failed, in which
 				*	case nothing more will be performed (i.e. just silently skip the task) */
-				else if (totalFailed > FILE_MAX_FAILURES)
+				else if (totalFailed >= FILE_MAX_FAILURES)
 					return false;
 				else {
 					let result = false;
@@ -1948,13 +1956,13 @@ _state.moveContent = async (entries, printTarget) => {
 	let promises = [], batchState = {}, totalFailed = 0, totalPerformed = 0;
 	for (const entry of entries) {
 		promises.push((async () => {
-			if (totalFailed > FILE_MAX_FAILURES)
+			if (totalFailed >= FILE_MAX_FAILURES)
 				return;
 
 			/* batch the actual operation (to limit the number of parallel operations;
 			*	silently skip the task if the operation has already failed) */
 			return _state.batch(batchState, async () => {
-				if (totalFailed > FILE_MAX_FAILURES)
+				if (totalFailed >= FILE_MAX_FAILURES)
 					return false;
 				const update = message('status');
 				update(entry.name);
@@ -2049,7 +2057,6 @@ _state.setupSocket = (initial) => {
 		/* perform a fetch to ensure the list is up-to-date (not on the
 		*	initial sync; assume it to be valid; silently ignore errors) */
 		if (initial) return;
-		_state.socket.fetching = true;
 		_state.fs.fetchDirectory(_state.path)
 			.then((content) => {
 				const list = [];
@@ -2207,7 +2214,7 @@ _state.setupContentView = async (path, content, update) => {
 	navigation.replaceChild(_state.makeLocation(_state.path, (path) => _state.setupContentView(path, null, false), true, false), navigation.children[1]);
 	if (_state.path == '/') {
 		parent.classList.add('disabled');
-		delete parent.href;
+		parent.removeAttribute('href');
 		parent.onclick = null;
 	}
 	else {
@@ -2421,7 +2428,7 @@ window.onload = () => {
 
 	/* register all mouse capture events for renaming (to prevent clicks from triggering any
 	*	side-effects; clicks, which originate on the renamed entry, will not be forwarded) */
-	lClickSource = null;
+	let lClickSource = null;
 	mainBody.addEventListener('mousedown', (e) => {
 		if (_state.renaming == null) return;
 		if (_state.renaming.element.contains(e.target)) {
@@ -2503,7 +2510,7 @@ window.onload = () => {
 		e.preventDefault();
 
 		clickTarget = e.target;
-		dragPrimed = ((_state.mouseLayout && e.target.dataset.background == 'true') ? { x: e.clientX, y: e.clientY } : null);
+		dragPrimed = ((_state.mouseLayout && e.target.dataset.background == 'true') ? { x: e.clientX, y: e.clientY, clear: (!e.shiftKey && !e.ctrlKey) } : null);
 	});
 	document.onmousemove = (e) => {
 		if (!_state.mouseLayout)
@@ -2514,8 +2521,14 @@ window.onload = () => {
 		if (_state.drag == null) {
 			if (dragPrimed == null)
 				return;
-			if (Math.min(Math.abs(dragPrimed.x - pos.x), Math.abs(dragPrimed.y - pos.y)) < MOUSE_MOVE_UNTIL_DRAG_PX)
+			if (Math.max(Math.abs(dragPrimed.x - pos.x), Math.abs(dragPrimed.y - pos.y)) < MOUSE_MOVE_UNTIL_DRAG_PX)
 				return;
+
+			/* check if the previous selection should be cleared */
+			if (dragPrimed.clear) {
+				for (const entry of _state.list)
+					entry.selected = false;
+			}
 
 			/* configure the drag configuration and clear the click */
 			_state.drag = { base: dragPrimed, last: dragPrimed };

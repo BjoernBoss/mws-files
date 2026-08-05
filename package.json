@@ -16,8 +16,8 @@
 	"types": "dist/files.d.ts",
 	"exports": {
 		".": {
-			"default": "./dist/files.js",
-			"types": "./dist/files.d.ts"
+			"types": "./dist/files.d.ts",
+			"default": "./dist/files.js"
 		},
 		"./package.json": "./package.json"
 	},

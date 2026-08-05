@@ -6,7 +6,7 @@ A file sharing module for [`@bjoernboss/mws`](https://github.com/BjoernBoss/mws)
 
 It serves the content of a data directory over HTTP: browsing directories through a full-featured web frontend, downloading files and entire directories as ZIP archives, and - if permitted - uploading, copying, moving, and deleting content. A WebSocket endpoint allows API clients to listen for directory changes.
 
-All content is stored as plain files and directories in the configured data directory and persists across server restarts. Path reservations and copy jobs are managed by the `FileShare` module.
+All content is stored as plain files and directories in the configured data directory and persists across server restarts. Path reservations and copy jobs are managed by the `FileShare` module. Note: The module is not case-insensitivity aware. Meaning on file-systems, which do not consider case sensitivity, the uploading might overwrite files wrongfully.
 
 ## Installation
 
@@ -47,6 +47,7 @@ The directory view is an elaborate single-page browser frontend, built entirely 
 - Breadcrumb navigation with home and parent buttons; on narrow screens the breadcrumb scrolls end-favoring, keeping the closest parents visible.
 - Directory listing sorted with directories first, showing entry counts, human-readable file sizes, and localized modification dates.
 - Per-entry menu (via the menu button or right-click): Open, Download (files directly, directories as ZIP), Copy URL to the clipboard, Rename, Copy to..., Move to..., and Delete.
+- Browsing nested directories is performed in-place in the same page, to prevent repeated reloading.
 
 ### Uploading
 
@@ -59,7 +60,7 @@ The directory view is an elaborate single-page browser frontend, built entirely 
 
 - New names are edited inline in the listing itself (Enter confirms, Escape aborts), with client-side name validation.
 - The copy and move targets are chosen through a directory picker dialog, which allows navigating the whole share and creating new directories on the way; an in-place copy proposes a free `- Copy (n)` name.
-- Directory copies and deletions are performed recursively by the frontend: the tree is enumerated first, then processed file-by-file (copies preserve modification times).
+- Directory copies and deletions are performed recursively by the frontend: the tree is enumerated first, then processed file-by-file (copied files preserve their modification times; directory modification times only when permitted by the module).
 - Deletions must be confirmed through a dialog showing the full path.
 
 ### Progress and Robustness
@@ -72,7 +73,7 @@ The directory view is an elaborate single-page browser frontend, built entirely 
 
 ### State Caching
 
-For any client, all requests, which reach the same rebase, should have the same `Params` and `Endpoints` mappings. The frontend caches the endpoints, and parameter, and will re-use the assumptions for any sub-path within its `rebase` confinement. Dynamic `Params` or `Endpoints` for one client, depending on the accessed directory, may result unexpected or unintended assumptions and behavior of the frontend.
+For any client, all requests reaching the same rebase should have the same `Params` and `Endpoints` mappings. The frontend caches the endpoints and parameters, and will re-use these assumptions for any sub-path within its `rebase` confinement. Dynamic `Params` or `Endpoints` for one client, depending on the accessed directory, may result in unexpected or unintended assumptions and behavior of the frontend.
 
 ## Parameters
 
@@ -107,7 +108,7 @@ The `Endpoints` export provides the path constants used by the module. All paths
 
 All endpoints except `/static` additionally require `Params.access`; without it they respond with 403.
 
-Path components may not contain control characters or any of `/ \ ? : * " < > |`. The (possibly rebased) root directory itself can only be read, never modified, and cannot be the direct target of a copy or move, but can be copied/moved into.
+Path components may not contain control characters or any of `/ \ ? : * " < > |`. Entries in the data directory whose names contain such characters (created externally) are excluded from all listings, downloads, and change notifications. The (possibly rebased) root directory itself can only be read, never modified, and cannot be the direct target of a copy or move, but can be copied/moved into.
 
 ## Files API
 
@@ -166,4 +167,4 @@ Besides listings, the server sends one of three string identifiers:
 - **`"error"`**: watching the directory failed.
 - **`"close"`**: the server is shutting down.
 
-After an identifier is sent, the server closes the WebSocket. The underlying file-system watcher is kept alive for a ceratin grace period after the last listener disconnects, to handle quick reconnections.
+After an identifier is sent, the server closes the WebSocket. The underlying file-system watcher is kept alive for a certain grace period after the last listener disconnects, to handle quick reconnections.
