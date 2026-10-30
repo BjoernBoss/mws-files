@@ -4,9 +4,11 @@
 
 A file sharing module for [`@bjoernboss/mws`](https://github.com/BjoernBoss/mws).
 
-It serves the content of a data directory over HTTP: browsing directories through a full-featured web frontend, downloading files and entire directories as ZIP archives, and - if permitted - uploading, copying, moving, and deleting content. A WebSocket endpoint allows API clients to listen for directory changes.
+It serves the content of a data directory over HTTP: browsing directories through a full-featured web frontend, downloading files and entire directories as ZIP archives, and uploading, copying, moving, and deleting content, if permitted. A WebSocket endpoint allows API clients to listen for directory changes.
 
-All content is stored as plain files and directories in the configured data directory and persists across server restarts. Path reservations and copy jobs are managed by the `FileShare` module. Note: The module is not case-insensitivity aware. Meaning on file-systems, which do not consider case sensitivity, the uploading might overwrite files wrongfully.
+All content is stored as plain files and directories in the configured data directory and persists across server restarts. Path reservations and copy jobs are managed by the `FileShare` module.
+
+Note: The module is not case-insensitivity aware. Meaning on file-systems, which do not consider case sensitivity, the uploading might overwrite files wrongfully.
 
 ## Installation
 
@@ -40,40 +42,9 @@ Important: The module caches path reservations and copy jobs in memory. The same
 
 ## Frontend
 
-The directory view is an elaborate single-page browser frontend, built entirely on the public API described below. Operations not permitted by the configured parameters are hidden from the UI.
+The directory view is an elaborate single-page browser frontend, built entirely on the public API described below. Operations not permitted by the configured parameters are hidden from the UI. It supports Visually friendly navigations, managing, browsing, and progress stats and notifications for operations. The desktop version further offers various keyboard shortcuts and mouse interactions conventionally expected.
 
-### Browsing
-
-- Breadcrumb navigation with home and parent buttons; on narrow screens the breadcrumb scrolls end-favoring, keeping the closest parents visible.
-- Directory listing sorted with directories first, showing entry counts, human-readable file sizes, and localized modification dates.
-- Per-entry menu (via the menu button or right-click): Open, Download (files directly, directories as ZIP), Copy URL to the clipboard, Rename, Copy to..., Move to..., and Delete.
-- Browsing nested directories is performed in-place in the same page, to prevent repeated reloading.
-
-### Uploading
-
-- Files and entire directory trees can be uploaded via drag-and-drop anywhere on the page (an animated drop zone appears), or through the create menu (create directory, upload files, upload directory).
-- Directory uploads recreate the full tree, creating parent directories before their content.
-- Each file upload first reserves the target path, allowing name conflicts to be detected before any data is transferred; the original modification time of uploaded files is preserved (when permitted by the module).
-- Files exceeding the configured upload limit are skipped client-side with a notification; the limit is displayed in the create menu and drop zone.
-
-### Copying, Moving, and Deleting
-
-- New names are edited inline in the listing itself (Enter confirms, Escape aborts), with client-side name validation.
-- The copy and move targets are chosen through a directory picker dialog, which allows navigating the whole share and creating new directories on the way; an in-place copy proposes a free `- Copy (n)` name.
-- Directory copies and deletions are performed recursively by the frontend: the tree is enumerated first, then processed file-by-file (copied files preserve their modification times; directory modification times only when permitted by the module).
-- Deletions must be confirmed through a dialog showing the full path.
-
-### Progress and Robustness
-
-- All operations report through stacked toast notifications with status texts, per-file progress bars, and overall counters; copy jobs are polled once per second and their progress is animated using a speculative forecast between polls.
-- Bulk operations run at most 3 remote requests concurrently, skip entries whose parent operation failed, and abort after 12 failures.
-- A live change-listener WebSocket connection is established to update the view on changes.
-- The listing is updated optimistically after each successful operation, without re-fetching the directory, as this will be reported through the change-listener.
-- Navigating away is guarded by a confirmation prompt while operations are still running.
-
-### State Caching
-
-For any client, all requests reaching the same rebase should have the same `Params` and `Endpoints` mappings. The frontend caches the endpoints and parameters, and will re-use these assumptions for any sub-path within its `rebase` confinement. Dynamic `Params` or `Endpoints` for one client, depending on the accessed directory, may result in unexpected or unintended assumptions and behavior of the frontend.
+Note: For any client, all requests reaching the same rebase should have the same `Params` and `Endpoints` mappings. The frontend caches the endpoints and parameters, and will re-use these assumptions for any sub-path within its `rebase` confinement. Dynamic `Params` or `Endpoints` for one client, depending on the accessed directory, may result in unexpected or unintended assumptions and behavior of the frontend.
 
 ## Parameters
 
@@ -90,7 +61,7 @@ The `Params` object controls module behavior and access. All fields are optional
 
 Without any parameters the share is inaccessible; `access: true` alone yields a read-only share. Parameters can also be set per-request through `params` when dispatching to the module. Request parameters override the corresponding default, allowing parent modules to implement authentication or per-route access policies.
 
-With `rebase`, all paths of the connection - served content, copy and move targets, and watched directories - are resolved relative to the given sub-directory, and nothing outside of it can be reached. The rebasing is fully transparent to clients, which makes per-request `rebase` suitable for handing each user their own root within a shared data directory.
+With `rebase`, all paths of the connection (served content, copy and move targets, and watched directories) are resolved relative to the given sub-directory, and nothing outside of it can be reached. The rebasing is fully transparent to clients, which makes per-request `rebase` suitable for handing each user their own root within a shared data directory.
 
 ## Endpoints
 
