@@ -465,6 +465,7 @@ export class FileShare extends mws.ModuleHandler {
 		entries: Record<string, CopyJobEntry>;
 	}
 	private defaultParams: BurntParams;
+	private router: mws.Router<BurntParams>;
 
 	/**
 	 *	[dataPath] path to all of the directories and files to be served (must be the path to a directory).
@@ -487,6 +488,14 @@ export class FileShare extends mws.ModuleHandler {
 			uploadMTime: params?.uploadMTime ?? false,
 			rebase: mws.sanitize(params?.rebase ?? '/', false)
 		};
+
+		/* setup the routing of the endpoints (requests not matching any route are automatically answered with not-found) */
+		this.router = mws.makeRouter<BurntParams>([
+			...['GET', 'POST', 'PUT', 'DELETE'].map((method) => ({ method, pattern: `${Endpoints.files}/*path`, target: (client: mws.ClientRequest, args: Record<string, string>, params: BurntParams) => this.routeFiles(client, args.path, params) })),
+			{ method: '*', pattern: `${Endpoints.sockets}/*path`, target: (client, args, params) => this.routeSockets(client, args.path, params) },
+			{ method: 'GET', pattern: `${Endpoints.static}/+file`, target: (client, args) => this.routeStatic(client, args.file) },
+			{ method: 'GET', pattern: `${Endpoints.jobs}/:id`, target: (client, args, params) => this.routeJobs(client, args.id, params) }
+		]);
 	}
 
 	private triggerCheckReservations(): void {
@@ -1307,6 +1316,38 @@ export class FileShare extends mws.ModuleHandler {
 				entry.grace = setTimeout(() => entry.close('unused'), WATCHER_GRACE_MS);
 		});
 	}
+	private async routeFiles(client: mws.ClientRequest, encoded: string, params: BurntParams): Promise<void> {
+		if (!params.access)
+			return client.respondForbidden({ reason: 'Not allowed to access content' });
+		const path = this.decodePath(client, encoded);
+		if (path == null)
+			return;
+		return this.handleFiles(client, path, params);
+	}
+	private async routeSockets(client: mws.ClientRequest, encoded: string, params: BurntParams): Promise<void> {
+		if (!params.access)
+			return client.respondForbidden({ reason: 'Not allowed to access content' });
+		const path = this.decodePath(client, encoded);
+		if (path == null)
+			return;
+
+		/* try to accept the web socket and handle it (await acceptance to ensure the
+		*	stop method is not entered before the full accept has been performed) */
+		const ws = await client.acceptWebSocket();
+		if (ws != null)
+			this.acceptWebSocket(ws, mws.joinSanitized(params.rebase, path));
+	}
+	private async routeStatic(client: mws.ClientRequest, file: string): Promise<void> {
+		await client.tryRespondFile(this.fileStatic(file));
+	}
+	private async routeJobs(client: mws.ClientRequest, id: string, params: BurntParams): Promise<void> {
+		if (!params.access)
+			return client.respondForbidden({ reason: 'Not allowed to access content' });
+		if (!Object.hasOwn(this.copyJobs.entries, id))
+			return client.respondNotFound();
+		const job = this.copyJobs.entries[id];
+		return client.respondJson({ progress: job.progress, state: job.state, message: job.message });
+	}
 	protected override async handleRequest(client: mws.ClientRequest, raw?: mws.Params): Promise<void> {
 		const params: BurntParams = {
 			access: (typeof raw?.access == 'boolean' ? raw : this.defaultParams).access,
@@ -1318,47 +1359,8 @@ export class FileShare extends mws.ModuleHandler {
 		};
 		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | L: ${params.uploadLimit})`);
 
-		/* check if its a request for the files API (allow root itself for reading it) */
-		if (client.isSubPathOf(Endpoints.files)) {
-			if (!params.access)
-				return client.respondForbidden({ reason: 'Not allowed to access content' });
-			const path = this.decodePath(client, client.getChildPath(Endpoints.files));
-			if (path == null)
-				return;
-			return this.handleFiles(client, path, params);
-		}
-
-		/* check if its one of the listener (allow root itself for reading it) */
-		if (client.isSubPathOf(Endpoints.sockets)) {
-			if (!params.access)
-				return client.respondForbidden({ reason: 'Not allowed to access content' });
-			const path = this.decodePath(client, client.getChildPath(Endpoints.sockets));
-			if (path == null)
-				return;
-
-			/* try to accept the web socket and handle it (await acceptance to ensure the
-			*	stop method is not entered before the full accept has been performed) */
-			const ws = await client.acceptWebSocket();
-			if (ws != null)
-				this.acceptWebSocket(ws, mws.joinSanitized(params.rebase, path));
-			return;
-		}
-
-		/* check if its just static content to be served */
-		if (client.isInsideOf(Endpoints.static) && client.requireMethod('GET') != null)
-			await client.tryRespondFile(this.fileStatic(client.getChildPath(Endpoints.static)));
-
-		/* check if its a request for a job and respond with its status */
-		if (client.isInsideOf(Endpoints.jobs) && client.requireMethod('GET') != null) {
-			if (!params.access)
-				return client.respondForbidden({ reason: 'Not allowed to access content' });
-
-			const id = client.getChildPath(Endpoints.jobs).substring(1);
-			if (!(id in this.copyJobs.entries))
-				return client.respondNotFound();
-			const job = this.copyJobs.entries[id];
-			return client.respondJson({ progress: job.progress, state: job.state, message: job.message });
-		}
+		/* dispatch the request to the matching endpoint */
+		await this.router(client, params);
 	}
 	protected override async handleStop(): Promise<void> {
 		/* close all sockets and listener (no new sockets can arrive anymore once the stop-handler has started) */
