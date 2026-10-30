@@ -874,8 +874,19 @@ _state.showCreateMenu = (position) => {
 		entry.html.row.scrollIntoView();
 
 		/* start editing the new element */
+		_state.changeSelection(null, 'clear');
 		_state.createDirectory(entry.html.name, _state.path, (promise) => {
 			entry.html.row.remove();
+
+			/* wait for the completion to select the row as the initial row */
+			if (promise != null) promise.then((fileName) => {
+				for (const entry of _state.list) {
+					if (entry.name != fileName || entry.kind != 'directory')
+						continue;
+					_state.changeSelection(entry, 'set');
+					break;
+				}
+			});
 		});
 	};
 	content.children[1].onclick = (e) => {
@@ -2477,14 +2488,51 @@ window.onload = () => {
 			_state.changeSelection(null, 'clear');
 	});
 
-	/* register convenience handlers for keyboard deletion */
-	if (_state.config.delete) document.addEventListener('keydown', (e) => {
-		if (e.key != 'Delete') return;
-		const entries = _state.list.filter((e) => e.selected);
-		if (entries.length == 0) return;
-		e.preventDefault();
-		e.stopPropagation();
-		_state.showDeleteConfirm(entries);
+	/* register convenience handlers for keyboard deletion and navigation */
+	document.addEventListener('keydown', (e) => {
+		if (_state.config.delete && e.key == 'Delete') {
+			const entries = _state.list.filter((e) => e.selected);
+			if (entries.length == 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			_state.showDeleteConfirm(entries);
+		}
+		else if (_state.mouseLayout && _state.list.length > 0 && e.key == 'ArrowUp') {
+			e.preventDefault();
+			e.stopPropagation();
+			if (_state.shift.last == null)
+				_state.changeSelection(_state.list[_state.list.length - 1], 'set');
+			else if (_state.shift.last > 0)
+				_state.changeSelection(_state.list[_state.shift.last - 1], (e.shiftKey ? 'shift' : 'set'));
+			else if (!e.shiftKey)
+				_state.changeSelection(_state.list[0], 'set');
+		}
+		else if (_state.mouseLayout && _state.list.length > 0 && e.key == 'ArrowDown') {
+			e.preventDefault();
+			e.stopPropagation();
+			if (_state.shift.last == null)
+				_state.changeSelection(_state.list[0], 'set');
+			else if (_state.shift.last + 1 < _state.list.length)
+				_state.changeSelection(_state.list[_state.shift.last + 1], (e.shiftKey ? 'shift' : 'set'));
+			else if (!e.shiftKey)
+				_state.changeSelection(_state.list[_state.list.length - 1], 'set');
+		}
+		else if (_state.mouseLayout && !_state.selecting && (e.key == 'Enter' || e.key == 'Space')) {
+			const entry = _state.list.find((e) => e.selected);
+			if (entry == null) return;
+			e.preventDefault();
+			e.stopPropagation();
+			_state.openEntry(entry);
+		}
+		else if (_state.mouseLayout && e.key == 'Backspace') {
+			if (_state.path == '/') return;
+			e.preventDefault();
+			e.stopPropagation();
+			let parentPath = _state.path.substring(0, _state.path.lastIndexOf('/'));
+			if (parentPath == '')
+				parentPath = '/';
+			_state.setupContentView(parentPath, null, false);
+		}
 	});
 
 	/* register the multi-menu button handler */
