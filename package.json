@@ -1,6 +1,6 @@
 {
 	"name": "@bjoernboss/mws-files",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"type": "module",
 	"description": "Module in TypeScript to share and manage files and directories - For Modular Web Server",
 	"license": "BSD-3-Clause",
@@ -31,7 +31,7 @@
 		"prepare": "tsc"
 	},
 	"dependencies": {
-		"@bjoernboss/mws": "^1.4.0"
+		"@bjoernboss/mws": "^1.7.0"
 	},
 	"devDependencies": {
 		"@types/node": "^25.6.0",
