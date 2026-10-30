@@ -465,7 +465,7 @@ export class FileShare extends mws.ModuleHandler {
 		entries: Record<string, CopyJobEntry>;
 	}
 	private defaultParams: BurntParams;
-	private router: mws.Router<BurntParams>;
+	private router?: mws.Router<BurntParams>;
 
 	/**
 	 *	[dataPath] path to all of the directories and files to be served (must be the path to a directory).
@@ -488,14 +488,6 @@ export class FileShare extends mws.ModuleHandler {
 			uploadMTime: params?.uploadMTime ?? false,
 			rebase: mws.sanitize(params?.rebase ?? '/', false)
 		};
-
-		/* setup the routing of the endpoints (requests not matching any route are automatically answered with not-found) */
-		this.router = mws.makeRouter<BurntParams>([
-			...['GET', 'POST', 'PUT', 'DELETE'].map((method) => ({ method, pattern: `${Endpoints.files}/*path`, target: (client: mws.ClientRequest, args: Record<string, string>, params: BurntParams) => this.routeFiles(client, args.path, params) })),
-			{ method: '*', pattern: `${Endpoints.sockets}/*path`, target: (client, args, params) => this.routeSockets(client, args.path, params) },
-			{ method: 'GET', pattern: `${Endpoints.static}/+file`, target: (client, args) => this.routeStatic(client, args.file) },
-			{ method: 'GET', pattern: `${Endpoints.jobs}/:id`, target: (client, args, params) => this.routeJobs(client, args.id, params) }
-		]);
 	}
 
 	private triggerCheckReservations(): void {
@@ -1359,7 +1351,15 @@ export class FileShare extends mws.ModuleHandler {
 		};
 		client.trace(`Files handler for [${client.path}] (A: ${params.access} | U: ${params.upload} | D: ${params.delete} | T: ${params.uploadMTime} | L: ${params.uploadLimit})`);
 
-		/* dispatch the request to the matching endpoint */
+		/* check if the routing of the endpoints needs to be constructed */
+		if (this.router == null) this.router = mws.makeRouter<BurntParams>([
+			...['GET', 'POST', 'PUT', 'DELETE'].map((method) => ({ method, pattern: `${Endpoints.files}/*path`, target: (client: mws.ClientRequest, args: Record<string, string>, params: BurntParams) => this.routeFiles(client, args.path, params) })),
+			{ method: '*', pattern: `${Endpoints.sockets}/*path`, target: (client, args, params) => this.routeSockets(client, args.path, params) },
+			{ method: 'GET', pattern: `${Endpoints.static}/+file`, target: (client, args) => this.routeStatic(client, args.file) },
+			{ method: 'GET', pattern: `${Endpoints.jobs}/:id`, target: (client, args, params) => this.routeJobs(client, args.id, params) }
+		]);
+
+		/* dispatch the request to the matching endpoint (requests not matching any route are automatically answered with not-found) */
 		await this.router(client, params);
 	}
 	protected override async handleStop(): Promise<void> {
